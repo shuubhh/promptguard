@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>PromptGuard</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <div class="pg-popup-root">
+    <header class="pg-popup-header">
+      <span class="pg-popup-logo">🛡️</span>
+      <div>
+        <h1>PromptGuard</h1>
+        <p class="pg-tagline">Keep client code out of the cloud</p>
+      </div>
+    </header>
+
+    <section class="pg-section">
+      <h2>Dashboard connection</h2>
+      <p class="pg-hint">
+        Paste the Supabase URL, the anon key, and the API key (JWT) from
+        Dashboard → Settings → Extension API key.
+      </p>
+      <label class="pg-label" for="supabaseUrl">Supabase URL</label>
+      <input id="supabaseUrl" class="pg-input" type="text" placeholder="https://xxxx.supabase.co" />
+
+      <label class="pg-label" for="anonKey">Supabase anon key</label>
+      <input id="anonKey" class="pg-input" type="text" placeholder="sb_publishable_... or eyJ..." />
+
+      <label class="pg-label" for="apiKey">API key (your user JWT)</label>
+      <input id="apiKey" class="pg-input" type="password" placeholder="eyJhbGciOi..." />
+
+      <label class="pg-label" for="refreshToken">Refresh token (recommended)</label>
+      <input id="refreshToken" class="pg-input" type="password" placeholder="Paste the refresh token from Settings — stops JWT-expired errors" />
+
+      <div class="pg-row">
+        <button id="saveBtn" class="pg-btn pg-btn-primary" type="button">Save &amp; Fetch Projects</button>
+        <button id="testBtn" class="pg-btn pg-btn-outline" type="button">Test Connection</button>
+        <span id="saveStatus" class="pg-save-status"></span>
+      </div>
+    </section>
+
+    <section class="pg-section">
+      <h2>Status</h2>
+      <div class="pg-status-grid">
+        <div class="pg-status-item"><span class="pg-status-label">Projects</span><span id="statProjects" class="pg-status-value">—</span></div>
+        <div class="pg-status-item"><span class="pg-status-label">Safe today</span><span id="statSafe" class="pg-status-value">0</span></div>
+        <div class="pg-status-item"><span class="pg-status-label">Flagged today</span><span id="statFlagged" class="pg-status-value">0</span></div>
+        <div class="pg-status-item"><span class="pg-status-label">Blocked today</span><span id="statBlocked" class="pg-status-value">0</span></div>
+      </div>
+      <button id="clearLogsBtn" class="pg-btn pg-btn-ghost" type="button">Clear audit log &amp; stats</button>
+    </section>
+
+    <footer class="pg-popup-footer">
+      <span>PromptGuard v0.1.0 · local storage only</span>
+    </footer>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>

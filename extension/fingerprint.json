@@ -1,0 +1,43 @@
+{
+  "version": "1.0",
+  "project": "FakeBank Dev",
+  "scanned_at": "2026-08-15T00:00:00.000Z",
+  "packages": [
+    "com.fakebank.wealth.portfolio",
+    "com.fakebank.retail.core",
+    "com.fakebank.internal"
+  ],
+  "class_names": [
+    "CustomerWealthPortfolioService",
+    "TransactionLedgerReconciliation",
+    "PortfolioReconciliationReport",
+    "TransactionLedgerExport"
+  ],
+  "domain_vocabulary": [
+    "ledger",
+    "nostro",
+    "vostro",
+    "portfolio",
+    "reconciliation",
+    "swift",
+    "clearing",
+    "settlement",
+    "collateral",
+    "wealth",
+    "premium",
+    "tier",
+    "iban"
+  ],
+  "internal_urls": [
+    "https://api.fakebank-internal.corp/v2/portfolio"
+  ],
+  "internal_ips": [
+    "192.168.10.45",
+    "10.10.5.22"
+  ],
+  "secrets_found": [],
+  "stats": {
+    "files_scanned": 4,
+    "languages_detected": ["java", "python"]
+  }
+}

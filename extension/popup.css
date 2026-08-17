@@ -1,0 +1,179 @@
+/* PromptGuard popup — dark security theme */
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  width: 340px;
+  background: #16213e;
+  color: #e8e8f0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  font-size: 13px;
+}
+
+.pg-popup-root {
+  padding: 16px;
+}
+
+.pg-popup-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #2c2f42;
+}
+
+.pg-popup-logo {
+  font-size: 26px;
+  line-height: 1;
+}
+
+.pg-popup-header h1 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 800;
+  color: #ffffff;
+}
+
+.pg-tagline {
+  margin: 2px 0 0;
+  font-size: 11px;
+  color: #8892b0;
+}
+
+.pg-section {
+  padding: 12px 0;
+  border-bottom: 1px solid #22263a;
+}
+
+.pg-section h2 {
+  margin: 0 0 6px;
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #f5a623;
+}
+
+.pg-hint {
+  margin: 0 0 10px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: #8892b0;
+}
+
+.pg-label {
+  display: block;
+  margin: 8px 0 4px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #b9bfd4;
+}
+
+.pg-input {
+  width: 100%;
+  padding: 8px 10px;
+  background: #0f1220;
+  border: 1px solid #2c2f42;
+  border-radius: 6px;
+  color: #e8e8f0;
+  font-size: 12px;
+  outline: none;
+}
+
+.pg-input:focus {
+  border-color: #e94560;
+}
+
+.pg-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.pg-btn {
+  padding: 8px 12px;
+  border: none;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.pg-btn-primary {
+  background: #e94560;
+  color: #ffffff;
+}
+
+.pg-btn-primary:hover {
+  background: #d63851;
+}
+
+.pg-btn-outline {
+  background: transparent;
+  border: 1px solid #4a5068;
+  color: #b9bfd4;
+}
+
+.pg-btn-outline:hover {
+  border-color: #8892b0;
+  color: #ffffff;
+}
+
+.pg-btn-ghost {
+  background: transparent;
+  border: 1px solid #4a5068;
+  color: #b9bfd4;
+  margin-top: 10px;
+  width: 100%;
+}
+
+.pg-btn-ghost:hover {
+  border-color: #8892b0;
+  color: #ffffff;
+}
+
+.pg-save-status {
+  font-size: 11px;
+  color: #7fd6a4;
+}
+
+.pg-save-status.error {
+  color: #ff6b81;
+}
+
+.pg-status-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.pg-status-item {
+  background: #0f1220;
+  border: 1px solid #2c2f42;
+  border-radius: 6px;
+  padding: 8px 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.pg-status-label {
+  font-size: 11px;
+  color: #8892b0;
+}
+
+.pg-status-value {
+  font-size: 14px;
+  font-weight: 800;
+  color: #ffffff;
+}
+
+.pg-popup-footer {
+  padding-top: 10px;
+  font-size: 10px;
+  color: #5c6482;
+  text-align: center;
+}

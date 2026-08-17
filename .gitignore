@@ -1,0 +1,28 @@
+# ---------- Node ----------
+node_modules/
+dist/
+
+# ---------- Secrets — never commit real credentials ----------
+.env
+.env.local
+.env.*.local
+
+# ---------- Logs & temp ----------
+*.log
+/tmp/
+
+# ---------- Python scratch (throwaway diagnostic scripts) ----------
+_*.py
+_*.sh
+__pycache__/
+*.pyc
+
+# ---------- OS / editors ----------
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# ---------- Freebuff client state (not project code) ----------
+.freebuff/
