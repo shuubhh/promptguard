@@ -66,6 +66,22 @@ Build for production: `npm run build` (output in `dist/`).
 | `/team`    | Member list + invites                                          |
 | `/settings`| Org name, plan usage, extension download, extension API key    |
 
+## 5. Generate fingerprints (Component 1 — Python scanner)
+
+The `Projects` page's fingerprint upload expects output from the Python
+scanner in `../scanner/`:
+
+```bash
+cd ..
+python scanner/promptguard_scanner.py /path/to/client/repo \
+    --name "HDFC Wealth Platform" \
+    --output fingerprint.json
+```
+
+Then upload `fingerprint.json` in **Projects → Add Project**. The extension's
+**Save & Fetch Projects** pulls every uploaded fingerprint and scans each
+intercepted prompt against all of them. See `scanner/README.md` for details.
+
 ## Verification script
 
 `python scripts/e2e-check.py` (after filling `.env`) checks the five tables,
