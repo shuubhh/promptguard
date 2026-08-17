@@ -641,7 +641,8 @@ def main(argv=None):
     print("  internal urls : %d" % len(fingerprint["internal_urls"]))
     print("  internal ips  : %d" % len(fingerprint["internal_ips"]))
     if fingerprint["secrets_found"]:
-        print("  ⚠ secrets found: %d (review before uploading!)" % len(fingerprint["secrets_found"]))
+        # ASCII-only warning: Windows consoles (cp1252) can't print the emoji.
+        print("  !! secrets found: %d (review before uploading!)" % len(fingerprint["secrets_found"]))
         for sec in fingerprint["secrets_found"][:10]:
             print("    - %s (%s) in %s" % (sec["label"], sec["severity"], sec["file"]))
     else:
