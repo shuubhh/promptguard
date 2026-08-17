@@ -25,10 +25,14 @@ except (AttributeError, ValueError):
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from promptguard_scanner import (  # noqa: E402
+    _inject_token,
+    _is_git_url,
+    _value_hash,
     is_internal_host,
     is_internal_url,
     is_private_ip,
     scan_repo,
+    shannon_entropy,
     verhoeff_valid,
 )
 
@@ -144,6 +148,22 @@ api.endpoint=https://api.hdfcbank-internal.corp/v2/portfolio
     write(root, "package-lock.json", '{"name":"fake","lockfileVersion":3,"packages":{}}')
     write(root, "build.gradle", "// nothing interesting")
 
+    # --- High-entropy password vs low-entropy (entropy gate) ---
+    write(root, "config/creds.env", """
+DB_PASSWORD='Xk9#mP2$vLqRz8!'
+DEBUG_PASSWORD='demo'
+""")
+
+    # --- AWS secret key + SendGrid + Twilio patterns ---
+    write(root, "src/infra/AwsClient.java", """
+package com.hdfcbank.infra;
+public class AwsClient {
+    private static final String AWS_SECRET = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
+    private static final String SENDGRID = "SG.aaaaaaaaaaaaaaaaaaaaaa.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    private static final String TWILIO = "ACaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+}
+""")
+
 
 def main():
     print("== scanner unit tests (helpers) ==")
@@ -162,6 +182,19 @@ def main():
     check("public host rejected", not is_internal_host("api.stripe.com"))
     check("internal url detection", is_internal_url("https://api.hdfcbank-internal.corp/v2"))
     check("public url rejected", not is_internal_url("https://api.openai.com/v1"))
+    check("entropy high for random key", shannon_entropy("Xk9#mP2$vLqRz8!") > 3.5)
+    check("entropy low for plain word", shannon_entropy("password") < 3.5)
+    check("value_hash is 16 hex chars", len(_value_hash("AKIAIOSFODNN7EXAMPLE")) == 16)
+    check("value_hash is deterministic", _value_hash("x") == _value_hash("x"))
+    check("value_hash differs for different values", _value_hash("x") != _value_hash("y"))
+    check("git url detection https", _is_git_url("https://github.com/x/y.git"))
+    check("git url detection ssh", _is_git_url("git@github.com:x/y.git"))
+    check("git url rejection local path", not _is_git_url("C:/repos/foo"))
+    check("token injection github", "tok@github.com/x/y.git" in _inject_token("https://github.com/x/y.git", "tok"))
+    check("token injection gitlab oauth2", "oauth2:tok@gitlab.com/x/y.git" in _inject_token("https://gitlab.com/x/y.git", "tok"))
+    check("token injection bitbucket x-token", "x-token-auth:tok@bitbucket.org/x/y.git" in _inject_token("https://bitbucket.org/x/y.git", "tok"))
+    check("token injection no token passthrough", _inject_token("https://github.com/x/y", None) == "https://github.com/x/y")
+    check("token injection with token appends .git", _inject_token("https://github.com/x/y", "tok") == "https://tok@github.com/x/y.git")
 
     print("== scanner integration (synthetic repo) ==")
     tmp = tempfile.mkdtemp(prefix="pg-scanner-test-")
@@ -200,6 +233,8 @@ def main():
               "reconciliation" in fp["domain_vocabulary"], str(fp["domain_vocabulary"]))
         check("vocabulary includes 'portfolio'",
               "portfolio" in fp["domain_vocabulary"], str(fp["domain_vocabulary"]))
+        check("vocabulary includes curated 'nostro' from prose",
+              "nostro" in fp["domain_vocabulary"], str(fp["domain_vocabulary"]))
         check("vocabulary excludes stopword 'public'",
               "public" not in fp["domain_vocabulary"])
         check("vocabulary excludes 'class'",
@@ -223,8 +258,19 @@ def main():
         keys = [s["key"] for s in secrets]
         check("secrets include aws_access_key", "aws_access_key" in keys, str(secrets))
         check("secrets include db_connection_string", "db_connection_string" in keys, str(secrets))
-        check("secrets never store full values (>30 chars)",
-              all(len(s["preview"]) <= 30 for s in secrets))
+        check("secrets include aws_secret_key", "aws_secret_key" in keys, str(keys))
+        check("secrets include sendgrid_key", "sendgrid_key" in keys, str(keys))
+        check("secrets include twilio_sid", "twilio_sid" in keys, str(keys))
+        check("secrets include generic_password (high entropy)",
+              "generic_password" in keys, str(keys))
+        check("secrets exclude low-entropy password (demo)",
+              not any(s["key"] == "generic_password" and "demo" in s["preview"] for s in secrets), str(secrets))
+        check("every secret has a value_hash",
+              all(s.get("value_hash") for s in secrets))
+        check("every secret has a line number",
+              all(isinstance(s.get("line"), int) and s["line"] > 0 for s in secrets))
+        check("secrets never store full values (preview <= 9 chars)",
+              all(len(s["preview"]) <= 9 for s in secrets), str([s["preview"] for s in secrets]))
         check("no secrets from node_modules/dist/target",
               all("node_modules" not in s["file"] and "dist/" not in s["file"]
                   and "target/" not in s["file"] for s in secrets), str(secrets))
