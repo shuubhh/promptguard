@@ -14,7 +14,7 @@ const NAV = [
 ];
 
 export default function Layout() {
-  const { profile, org, loading, reload } = useApp();
+  const { profile, org, user, loading, reload } = useApp();
   const navigate = useNavigate();
   const [orgName, setOrgName] = useState('');
   const [creating, setCreating] = useState(false);
@@ -49,7 +49,8 @@ export default function Layout() {
   }
 
   // First login: prompt for an organisation name (brief: "On first signup:
-  // create organisation, prompt for org name").
+  // create organisation, prompt for org name"). Only shown when the signed-in
+  // account genuinely has no org attached.
   if (!profile || !profile.org_id) {
     return (
       <div className="flex h-screen items-center justify-center p-4">
@@ -58,6 +59,11 @@ export default function Layout() {
           <h1 className="text-center text-xl font-bold text-white">Create your organisation</h1>
           <p className="mt-1 text-center text-sm text-muted">
             This groups your projects, team and audit events.
+          </p>
+          <p className="mt-3 text-center text-xs text-muted">
+            Signed in as <span className="font-semibold text-soft">{user ? user.email : '…'}</span>.
+            If this account already has an organisation, this screen should not appear —
+            sign out and back in to re-load it.
           </p>
           <form onSubmit={handleCreateOrg} className="mt-6 space-y-4">
             <Input
