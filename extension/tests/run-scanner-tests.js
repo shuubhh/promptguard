@@ -142,6 +142,36 @@ function expectLevel(level, expected, name) {
     assert.strictEqual(r.matches[0].key, 'aws_access_key', 'match key');
   });
 
+  await test('AWS secret key → 0.99 critical', async () => {
+    const r = await PG.scanContent('const AWS_SECRET = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";');
+    expectLevel(r.level, 'critical', 'level');
+    assert.ok(r.matches.some((m) => m.key === 'aws_secret_key'), 'aws_secret_key match');
+  });
+
+  await test('SendGrid API key → 0.99 critical', async () => {
+    const r = await PG.scanContent('SENDGRID_API = "SG.aaaaaaaaaaaaaaaaaaaaaa.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"');
+    expectLevel(r.level, 'critical', 'level');
+    assert.ok(r.matches.some((m) => m.key === 'sendgrid_key'), 'sendgrid_key match');
+  });
+
+  await test('Twilio SID → 0.99 critical', async () => {
+    const r = await PG.scanContent('TWILIO_SID = "ACaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"');
+    expectLevel(r.level, 'critical', 'level');
+    assert.ok(r.matches.some((m) => m.key === 'twilio_sid'), 'twilio_sid match');
+  });
+
+  await test('Hardcoded high-entropy password → 0.99 critical', async () => {
+    const r = await PG.scanContent("DB_PASSWORD='Xk9#mP2$vLqRz8!'");
+    expectLevel(r.level, 'critical', 'level');
+    assert.ok(r.matches.some((m) => m.key === 'generic_password'), 'generic_password match');
+  });
+
+  await test('Low-entropy password (password="demo") → silent, no match', async () => {
+    const r = await PG.scanContent('password="demo"');
+    expectLevel(r.level, 'silent', 'level');
+    assert.ok(!r.matches.some((m) => m.key === 'generic_password'), 'no generic_password match');
+  });
+
   await test('Exact package match → 0.95 critical, names the project', async () => {
     const r = await PG.scanContent('import com.hdfcbank.wealth.portfolio.Helper;');
     expectLevel(r.level, 'critical', 'level');

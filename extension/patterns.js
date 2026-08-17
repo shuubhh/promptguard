@@ -25,11 +25,25 @@
       regex: /\bAKIA[0-9A-Z]{16}\b/g
     },
     {
+      key: 'aws_secret_key',
+      label: 'AWS Secret Key',
+      severity: 'critical',
+      confidence: 0.99,
+      regex: /aws.{0,20}secret.{0,20}['"][0-9a-zA-Z/+]{40}['"]/gi
+    },
+    {
       key: 'github_token',
       label: 'GitHub Personal Access Token',
       severity: 'critical',
       confidence: 0.99,
       regex: /\bghp_[a-zA-Z0-9]{36}\b/g
+    },
+    {
+      key: 'github_oauth',
+      label: 'GitHub OAuth Token',
+      severity: 'critical',
+      confidence: 0.99,
+      regex: /\bgho_[a-zA-Z0-9]{36}\b/g
     },
     {
       key: 'gitlab_token',
@@ -46,18 +60,46 @@
       regex: /\bsk_live_[a-zA-Z0-9]{24,}\b/g
     },
     {
+      key: 'stripe_publishable',
+      label: 'Stripe Publishable Key',
+      severity: 'high',
+      confidence: 0.99,
+      regex: /\bpk_live_[a-zA-Z0-9]{24,}\b/g
+    },
+    {
+      key: 'twilio_sid',
+      label: 'Twilio Account SID',
+      severity: 'high',
+      confidence: 0.99,
+      regex: /\bAC[a-f0-9]{32}\b/g
+    },
+    {
+      key: 'sendgrid_key',
+      label: 'SendGrid API Key',
+      severity: 'critical',
+      confidence: 0.99,
+      regex: /\bSG\.[a-zA-Z0-9\-_]{22}\.[a-zA-Z0-9\-_]{43}\b/g
+    },
+    {
+      key: 'brevo_smtp_key',
+      label: 'Brevo SMTP Key',
+      severity: 'critical',
+      confidence: 0.99,
+      regex: /\bxsmtpsib-[a-f0-9]{64}-[a-zA-Z0-9]{16}\b/g
+    },
+    {
       key: 'db_connection_string',
       label: 'Database Connection String',
       severity: 'critical',
       confidence: 0.99,
-      regex: /(?:mongodb|postgresql|mysql):\/\/[^\s]{10,}/g
+      regex: /(?:mongodb|postgresql|postgres|mysql|redis|mssql|sqlserver):\/\/[^\s]{10,}/g
     },
     {
       key: 'private_key',
-      label: 'Private Key (PEM)',
+      label: 'Private Key (PEM/PGP/SSH)',
       severity: 'critical',
       confidence: 0.99,
-      regex: /-----BEGIN (RSA |EC )?PRIVATE KEY-----/g
+      regex: /-----BEGIN (?:RSA |EC |PGP |OPENSSH )?PRIVATE KEY(?: BLOCK)?-----/g
     },
     {
       key: 'jwt_token',
@@ -82,6 +124,20 @@
       severity: 'medium',
       confidence: 0.99,
       regex: /\b[A-Z]{5}[0-9]{4}[A-Z]{1}\b/g
+    },
+    {
+      key: 'generic_password',
+      label: 'Hardcoded Password',
+      severity: 'high',
+      confidence: 0.99,
+      regex: /(?:password|passwd|pwd|secret|api_key|apikey|auth_token)\s*[=:]\s*['"][^'"]{8,}['"]/gi,
+      // Skip low-entropy values like password="demo" that are clearly not
+      // real credentials (same gate as the Python scanner).
+      validate: (match) => {
+        const vm = String(match).match(/[=:]\s*['"]([^'"]+)['"]/);
+        const value = vm ? vm[1] : match;
+        return shannonEntropy(value) >= 3.5;
+      }
     },
     {
       key: 'internal_ip',
@@ -120,6 +176,20 @@
       regex: /\bAIza[0-9A-Za-z_-]{35}\b/g
     }
   ];
+
+  /** Shannon entropy — used to reject low-entropy password-assignment hits. */
+  function shannonEntropy(text) {
+    if (!text) return 0;
+    const counts = {};
+    for (const ch of text) counts[ch] = (counts[ch] || 0) + 1;
+    const len = text.length;
+    let entropy = 0;
+    for (const k of Object.keys(counts)) {
+      const p = counts[k] / len;
+      entropy -= p * Math.log2(p);
+    }
+    return entropy;
+  }
 
   /**
    * Find every occurrence of every secret pattern in `text`.
