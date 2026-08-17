@@ -82,6 +82,22 @@ Then upload `fingerprint.json` in **Projects → Add Project**. The extension's
 **Save & Fetch Projects** pulls every uploaded fingerprint and scans each
 intercepted prompt against all of them. See `scanner/README.md` for details.
 
+## 6. Scan a repo directly from the dashboard (v2 feature)
+
+The **Projects → Add Project → "Or scan from a repository"** box scans a
+public GitHub/GitLab repo entirely in the browser (no backend):
+
+1. Paste a repo URL (`https://github.com/org/repo` or a GitLab URL).
+2. Click **Scan** — it fetches the file list + raw files via the provider
+   REST API, runs the same extraction logic as the Python scanner (packages,
+   classes, vocabulary, internal URLs/IPs, secrets), and previews the result.
+3. Click **Add project** to save the fingerprint to Supabase.
+
+Nothing is uploaded until you click **Add project**. Pattern data is shared
+between the JS and Python scanners via `../scanner/spec.json`, so the two
+implementations can't drift. Private repos aren't supported from the browser
+— use the Python CLI with `--token` for those.
+
 ## Verification script
 
 `python scripts/e2e-check.py` (after filling `.env`) checks the five tables,

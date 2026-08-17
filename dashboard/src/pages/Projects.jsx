@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useApp } from '../lib/AppContext';
 import { createProject, getProjects, getTeam } from '../lib/api';
+import { scanRepoUrl } from '../lib/repoScanner';
 import { Badge, Button, Card, EmptyState, Input, Modal, Spinner, formatTime } from '../components/ui';
 
 export default function Projects() {
@@ -18,6 +19,8 @@ export default function Projects() {
   const [fileName, setFileName] = useState('');
   const [fingerprint, setFingerprint] = useState(null);
   const [repoUrl, setRepoUrl] = useState('');
+  const [scanning, setScanning] = useState(false);
+  const [scanStatus, setScanStatus] = useState('');
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState('');
   const [copiedId, setCopiedId] = useState(null);
@@ -89,6 +92,33 @@ export default function Projects() {
       setFormError(err && err.message ? err.message : 'Failed to create project');
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function handleScanRepo(e) {
+    e.preventDefault();
+    if (!repoUrl.trim()) {
+      setFormError('Enter a repository URL first');
+      return;
+    }
+    setScanning(true);
+    setScanStatus('Starting…');
+    setFormError('');
+    setFingerprint(null);
+    setFileName('');
+    try {
+      const fp = await scanRepoUrl(repoUrl, {
+        onProgress: (msg) => setScanStatus(msg)
+      });
+      setFingerprint(fp);
+      if (!name.trim()) setName(fp.project);
+      const n = fp.packages.length + fp.class_names.length + fp.domain_vocabulary.length;
+      setScanStatus(`Scanned ${fp.stats.files_scanned} files — ${n} fingerprint patterns found`);
+    } catch (err) {
+      setFormError((err && err.message) || 'Failed to scan repository');
+      setScanStatus('');
+    } finally {
+      setScanning(false);
     }
   }
 
@@ -193,13 +223,31 @@ export default function Projects() {
 
           <div>
             <span className="mb-1.5 block text-xs font-semibold text-muted">Or scan from a repository</span>
-            <Input
-              placeholder="https://gitlab.com/org/repo.git (coming soon)"
-              value={repoUrl}
-              onChange={(e) => setRepoUrl(e.target.value)}
-              disabled
-            />
-            <p className="mt-1 text-xs text-warning">Repo scanning is a v2 feature — upload the fingerprint for now.</p>
+            <div className="flex gap-2">
+              <Input
+                placeholder="https://github.com/org/repo"
+                value={repoUrl}
+                onChange={(e) => setRepoUrl(e.target.value)}
+                disabled={scanning}
+              />
+              <Button
+                type="button"
+                variant="outline"
+                onClick={handleScanRepo}
+                disabled={scanning || !repoUrl.trim()}
+                className="shrink-0"
+              >
+                {scanning ? 'Scanning…' : 'Scan'}
+              </Button>
+            </div>
+            {scanStatus ? (
+              <p className="mt-1 text-xs text-soft">{scanStatus}</p>
+            ) : (
+              <p className="mt-1 text-xs text-muted">
+                Public GitHub/GitLab repos only — scans in your browser, nothing is uploaded
+                until you click <span className="font-semibold">Add project</span>.
+              </p>
+            )}
           </div>
 
           {formError ? <p className="text-sm text-accent">{formError}</p> : null}

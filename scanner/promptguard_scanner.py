@@ -58,6 +58,14 @@ from urllib.parse import urlparse
 
 FINGERPRINT_VERSION = "1.0"
 
+# Shared pattern spec — single source of truth for secret patterns, domain
+# terms, generic class names, third-party package roots and stopwords.
+# The dashboard's JS scanner (dashboard/src/lib/repoScanner.js) reads the
+# same file, so the two implementations can never drift.
+_SPEC_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "spec.json")
+with open(_SPEC_PATH, encoding="utf-8") as _spec_f:
+    _SPEC = json.load(_spec_f)
+
 # Source-file language detection by extension.
 LANG_BY_EXT = {
     ".java": "java",
@@ -97,106 +105,21 @@ DEFAULT_EXCLUDE_FILES = {
 
 # Generic class names that carry no fingerprint value (a compound name like
 # CustomerWealthPortfolioService is kept; the bare word "Service" is not).
-GENERIC_CLASS_NAMES = {
-    "App", "Main", "Application", "ApplicationTests", "Test", "Tests", "Testing",
-    "Base", "BaseTest", "AbstractTest", "Config", "Configuration", "Constants",
-    "Utils", "Util", "Helper", "Helpers", "Controller", "RestController",
-    "Service", "ServiceImpl", "Manager", "ManagerImpl", "Handler", "Repository",
-    "RepositoryImpl", "Mapper", "Dao", "Dto", "Entity", "Model", "Models",
-    "Client", "Server", "Factory", "Builder", "Listener", "Adapter", "Exception",
-    "Error", "Response", "Request", "Result", "Results", "Key", "Keys", "Value",
-    "Values", "Component", "Resource", "Resources", "Properties", "Enums",
-    "Enum", "Interface", "Impl", "ServiceTest", "ControllerTest", "RepositoryTest",
-    "RestControllerAdvice", "ControllerAdvice", "SecurityConfig", "WebConfig",
-}
+GENERIC_CLASS_NAMES = set(_SPEC["generic_class_names"])
 
 # Well-known third-party / standard-library package roots that are never
 # reported as client packages.
-THIRD_PARTY_PACKAGE_ROOTS = (
-    "java.", "javax.", "jakarta.", "jdk.",
-    "org.apache.", "org.springframework.", "org.springframework.",
-    "org.hibernate.", "org.junit", "org.mockito", "org.slf4j", "org.json",
-    "org.w3c.", "org.xml.", "org.yaml.", "org.gradle", "org.glassfish",
-    "org.jboss", "org.jetbrains", "org.elasticsearch", "org.postgresql",
-    "org.neo4j", "org.mongodb", "org.thymeleaf", "org.mybatis", "org.assertj",
-    "org.awaitility", "org.projectlombok", "org.reactivestreams", "org.aspectj",
-    "org.camunda", "org.flowable", "org.quartz", "org.openqa", "org.joda",
-    "org.testng", "org.checkerframework", "org.dom4j", "org.dom4j",
-    "com.google.", "com.fasterxml.", "com.sun.", "com.ibm.", "com.microsoft.",
-    "com.amazon.", "com.oracle.", "com.github.", "com.squareup.", "com.zaxxer",
-    "com.mysql.", "com.mongodb.", "com.couchbase.", "com.rabbitmq.", "com.redis.",
-    "android.", "kotlin.", "io.reactivex", "io.netty", "io.grpc", "io.swagger",
-    "io.undertow", "io.micrometer", "io.micronaut", "io.quarkus", "io.vertx",
-    "net.sf.", "redis.", "ch.qos.logback", "org.wildfly", "org.kie", "org.drools",
-    "org.keycloak", "org.owasp", "org.bouncycastle", "org.xerial",
-)
+THIRD_PARTY_PACKAGE_ROOTS = tuple(_SPEC["third_party_package_roots"])
 
 # Business domain terms that signal sensitive/proprietary content. Curated so
 # the vocabulary catches domain jargon that appears in comments/prose/config
 # rather than only in code identifiers (a prompt mentioning "nostro" or
 # "hipaa" is a strong DLP signal even in natural language).
-BUSINESS_DOMAIN_TERMS = {
-    # Finance / Banking
-    "ledger", "nostro", "vostro", "remittance", "swift", "iban", "clearing",
-    "settlement", "reconciliation", "portfolio", "wealth", "premium", "tier",
-    "yield", "collateral", "mortgage", "underwriting", "actuarial",
-    # Healthcare
-    "hl7", "dicom", "icd10", "npi", "formulary", "ehr", "emr", "hipaa",
-    "patient", "diagnosis", "prescription", "clinical", "pharmacy",
-    "insurance", "claim",
-    # Logistics
-    "awb", "consignee", "shipper", "incoterm", "waybill", "manifest",
-    "customs", "tariff", "freight",
-    # General enterprise
-    "proprietary", "confidential", "internal", "restricted",
-}
+BUSINESS_DOMAIN_TERMS = set(_SPEC["business_domain_terms"])
 
 # Common English words + programming keywords excluded from domain vocabulary.
-STOPWORDS = set(
-    """a an and are as at be been being but by can could did do does doing done down
-    for from had has have having he her here hers him his how i i'd i'll i'm i've if
-    in into is it its itself just me more most my myself no nor not now of off on once
-    only or other our ours ourselves out over own same she should so some such than
-    that the their theirs them themselves then there these they this those through
-    to too under until up very we were what when where which while who whom why will
-    with you your yours yourself yourselves about above after again against all any
-    both each few etc even ever every far few get got i.e. ie inc into let like made
-    may might much must near never new next none often old once one onto out over own
-    per put quite rather really right said same say says see seen seem seems several
-    shall should since still such sure take than too try two under until upon us use
-    used using very via want way well were what when where whether which while who
-    whom whose why will with within without would yes yet you your
-    """.split()
-)
-
-PROG_KEYWORDS = set(
-    """if else elif for while do switch case break continue return def class import
-    from as try except finally raise with pass lambda yield global nonlocal assert
-    del not in is and or new public private protected static final void int long
-    double float boolean byte short char string bool true false null none self this
-    super base var let const function async await of typeof instanceof extends
-    implements interface enum struct union type record module export default require
-    package namespace using select insert update delete where join order group by
-    limit offset set values into create table alter drop index primary foreign key
-    reference references cascade begin commit rollback transaction trigger function
-    procedure view database schema user role grant revoke explain analyze vacuum
-    explain select from where and or not null default unique check constraint
-    auto_increment serial bigint integer varchar char text date time timestamp
-    datetime interval year month day hour minute second current_date current_time
-    current_timestamp now localtime localtimestamp coalesce nullif cast convert
-    substring trim length upper lower concat sum avg min max count distinct
-    inner left right full outer cross natural join on using group having order
-    asc desc limit offset fetch first next row rows only window partition over
-    rank dense_rank row_number lag lead first_value last_value nth_value cume_dist
-    percent_rank ntile cube rollup grouping sets materialized view temp temporary
-    unlogged sequence owned by rename alter column add drop constraint truncate
-    reload flush privileges lock unlock tables show describe explain kill use quit
-    exit begin end declare cursor open fetch close deallocate prepare execute
-    execute immediate call return value language plpgsql sql procedural stable
-    volatile immutable strict security definer invoker search_path set local
-    """.split()
-)
-
+STOPWORDS = set(_SPEC["stopwords"])
+PROG_KEYWORDS = set(_SPEC["prog_keywords"])
 VOCAB_STOP = STOPWORDS | PROG_KEYWORDS
 
 # ---------------------------------------------------------------------------
@@ -204,31 +127,13 @@ VOCAB_STOP = STOPWORDS | PROG_KEYWORDS
 # broader set inspired by truffleHog / gitleaks. The scanner is a *repo audit*:
 # secrets_found is informational (dashboard badge), so wider coverage is fine —
 # the extension keeps its own conservative runtime list.
+# Shared with the JS scanner via scanner/spec.json.
 # ---------------------------------------------------------------------------
 
 # entry: (key, label, severity, regex, validator|None)
 SECRET_PATTERNS = [
-    ("aws_access_key", "AWS Access Key", "critical", r"\bAKIA[0-9A-Z]{16}\b"),
-    ("aws_secret_key", "AWS Secret Key", "critical", r"(?i)aws.{0,20}secret.{0,20}['\"][0-9a-zA-Z/+]{40}['\"]"),
-    ("github_token", "GitHub Personal Access Token", "critical", r"\bghp_[a-zA-Z0-9]{36}\b"),
-    ("github_oauth", "GitHub OAuth Token", "critical", r"\bgho_[a-zA-Z0-9]{36}\b"),
-    ("gitlab_token", "GitLab Personal Access Token", "critical", r"\bglpat-[a-zA-Z0-9\-]{20}\b"),
-    ("stripe_secret_key", "Stripe Secret Key", "critical", r"\bsk_live_[a-zA-Z0-9]{24,}\b"),
-    ("stripe_publishable", "Stripe Publishable Key", "high", r"\bpk_live_[a-zA-Z0-9]{24,}\b"),
-    ("twilio_sid", "Twilio Account SID", "high", r"\bAC[a-f0-9]{32}\b"),
-    ("sendgrid_key", "SendGrid API Key", "critical", r"\bSG\.[a-zA-Z0-9\-_]{22}\.[a-zA-Z0-9\-_]{43}\b"),
-    ("brevo_smtp_key", "Brevo SMTP Key", "critical", r"\bxsmtpsib-[a-f0-9]{64}-[a-zA-Z0-9]{16}\b"),
-    ("db_connection_string", "Database Connection String", "critical", r"(?:mongodb|postgresql|postgres|mysql|redis|mssql|sqlserver)://[^\s\"']{10,}"),
-    ("private_key", "Private Key (PEM/PGP/SSH)", "critical", r"-----BEGIN (?:RSA |EC |PGP |OPENSSH )?PRIVATE KEY(?: BLOCK)?-----"),
-    ("jwt_token", "JWT Token", "high", r"eyJ[A-Za-z0-9\-_=]+\.[A-Za-z0-9\-_=]+\."),
-    ("aadhaar_number", "Aadhaar Number", "high", r"\b[2-9]{1}[0-9]{3}\s?[0-9]{4}\s?[0-9]{4}\b", "verhoeff"),
-    ("pan_number", "PAN Number", "medium", r"\b[A-Z]{5}[0-9]{4}[A-Z]{1}\b"),
-    ("generic_password", "Hardcoded Password", "high", r"(?i)(?:password|passwd|pwd|secret|api_key|apikey|auth_token)\s*[=:]\s*['\"][^'\"]{8,}['\"]", "entropy"),
-    ("anthropic_api_key", "Anthropic API Key", "critical", r"\bsk-ant-[a-zA-Z0-9_-]{20,}\b"),
-    ("openai_api_key", "OpenAI API Key", "critical", r"\bsk-(?:proj|svcacct)-[a-zA-Z0-9_-]{20,}\b"),
-    ("slack_token", "Slack Token", "high", r"\bxox[baprs]-[a-zA-Z0-9-]{10,}\b"),
-    ("google_api_key", "Google API Key", "high", r"\bAIza[0-9A-Za-z_-]{35}\b"),
-    ("indian_phone", "Indian Phone Number", "low", r"(?<!\d)(?:\+91|0)?[6-9]\d{9}(?!\d)"),
+    (p["key"], p["label"], p["severity"], p["pattern"], p.get("validator"))
+    for p in _SPEC["secret_patterns"]
 ]
 
 # Verhoeff checksum tables (Aadhaar) — mirrors extension/patterns.js.
