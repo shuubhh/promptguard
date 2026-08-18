@@ -22,7 +22,7 @@ function check(name, cond, extra) {
 }
 
 // ------------------------------------------------------------------ sandbox
-function loadBackground({ fetchImpl }) {
+function loadBackground({ fetchImpl, withConfig }) {
   const storageData = {
     projects: [],
     audit_log: [],
@@ -96,9 +96,14 @@ function loadBackground({ fetchImpl }) {
     }
   };
   vm.createContext(context);
-  const src =
-    fs.readFileSync(path.join(__dirname, '..', 'background.js'), 'utf8') +
-    '\n;globalThis.__bg = { eventKey, isSyncableEvent, enqueueSync, drainPendingSync, reconcileAuditLog, syncEventToBackend };';
+  let src = fs.readFileSync(path.join(__dirname, '..', 'background.js'), 'utf8');
+  // Simulate the real service worker: config.js and background.js share one
+  // global scope (importScripts evaluates in the same realm). Inlining them
+  // into one script reproduces the var/const redeclaration bug class.
+  if (withConfig) {
+    src = fs.readFileSync(path.join(__dirname, '..', 'config.js'), 'utf8') + '\n' + src;
+  }
+  src += '\n;globalThis.__bg = { eventKey, isSyncableEvent, enqueueSync, drainPendingSync, reconcileAuditLog, syncEventToBackend, CFG };';
   vm.runInContext(src, context);
   return { bg: context.__bg, storage: storageData, calls, listeners };
 }
@@ -197,6 +202,21 @@ function makeEvent(overrides) {
     await bg.drainPendingSync();
     check('old-tab event POSTed exactly once', calls.posts === 1, 'posts=' + calls.posts);
     check('silent event never synced', !storage.audit_log.find((e) => e.event_type === 'silent').synced_at);
+  }
+
+  console.log('\nTest 7 — config.js loads into the worker scope (regression: var/const collision):');
+  {
+    const { bg } = loadBackground({ fetchImpl: {}, withConfig: true });
+    check(
+      'CFG.FUNCTIONS_BASE resolves to the real functions URL',
+      bg.CFG.FUNCTIONS_BASE === 'https://aefujtgikbengcwwhlgq.supabase.co/functions/v1',
+      bg.CFG.FUNCTIONS_BASE
+    );
+    check('CFG.SUPABASE_ANON_KEY populated', bg.CFG.SUPABASE_ANON_KEY.length > 20, 'len=' + bg.CFG.SUPABASE_ANON_KEY.length);
+  }
+  {
+    const { bg } = loadBackground({ fetchImpl: {} }); // plain Node sandbox, no config.js
+    check('CFG falls back to empty config in Node sandbox', bg.CFG.FUNCTIONS_BASE === '', bg.CFG.FUNCTIONS_BASE);
   }
 
   console.log('\nTest 6 — no org_id yet → event waits, does not drop:');

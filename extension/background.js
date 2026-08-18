@@ -12,7 +12,10 @@
 'use strict';
 
 // Baked-in defaults for the SaaS instance (public anon key; RLS protects data).
-// Guarded so the Node test sandbox (no importScripts) still loads cleanly.
+// NOTE: we must NOT redeclare PROMPTGUARD_CONFIG here — a `var` with the same
+// name as config.js's `const` makes importScripts throw, the fallback below
+// silently activates, and every fetch goes to an empty base URL. We alias it
+// to CFG instead (conflict-free whether or not config.js was loaded).
 if (typeof importScripts === 'function') {
   try {
     importScripts('config.js');
@@ -20,10 +23,10 @@ if (typeof importScripts === 'function') {
     /* non-fatal */
   }
 }
-if (typeof PROMPTGUARD_CONFIG === 'undefined') {
-  // eslint-disable-next-line no-var
-  var PROMPTGUARD_CONFIG = { SUPABASE_URL: '', SUPABASE_ANON_KEY: '', FUNCTIONS_BASE: '' };
-}
+const CFG =
+  typeof PROMPTGUARD_CONFIG !== 'undefined' && PROMPTGUARD_CONFIG
+    ? PROMPTGUARD_CONFIG
+    : { SUPABASE_URL: '', SUPABASE_ANON_KEY: '', FUNCTIONS_BASE: '' };
 
 // The event payload matches the Supabase `events` table schema from the brief.
 // The real endpoint is configured at runtime via the popup
@@ -88,7 +91,7 @@ const CONFIG_POLL_PERIOD_MIN = 3;
 
 function deviceHeaders(token) {
   return {
-    apikey: PROMPTGUARD_CONFIG.SUPABASE_ANON_KEY,
+    apikey: CFG.SUPABASE_ANON_KEY,
     'Content-Type': 'application/json',
     Authorization: 'Bearer ' + token
   };
@@ -116,9 +119,9 @@ async function getDevice() {
 }
 
 async function joinOrg(code, deviceName, userEmail) {
-  const res = await fetch(PROMPTGUARD_CONFIG.FUNCTIONS_BASE + '/join-org', {
+  const res = await fetch(CFG.FUNCTIONS_BASE + '/join-org', {
     method: 'POST',
-    headers: { apikey: PROMPTGUARD_CONFIG.SUPABASE_ANON_KEY, 'Content-Type': 'application/json' },
+    headers: { apikey: CFG.SUPABASE_ANON_KEY, 'Content-Type': 'application/json' },
     body: JSON.stringify({ code: code, device_name: deviceName, user_email: userEmail })
   });
   const data = await res.json().catch(() => ({}));
@@ -143,7 +146,7 @@ async function joinOrg(code, deviceName, userEmail) {
 async function deviceSyncNow() {
   const device = await getDevice();
   if (!device) return { ok: false, error: 'no device' };
-  const res = await fetch(PROMPTGUARD_CONFIG.FUNCTIONS_BASE + '/org-config', {
+  const res = await fetch(CFG.FUNCTIONS_BASE + '/org-config', {
     headers: deviceHeaders(device.token)
   });
   if (res.status === 401) {
@@ -172,7 +175,7 @@ async function heartbeat() {
   const device = await getDevice();
   if (!device) return;
   try {
-    await fetch(PROMPTGUARD_CONFIG.FUNCTIONS_BASE + '/heartbeat', {
+    await fetch(CFG.FUNCTIONS_BASE + '/heartbeat', {
       method: 'POST',
       headers: deviceHeaders(device.token),
       body: '{}'
@@ -582,7 +585,7 @@ async function syncEventToBackend(event) {
   // function (server-validated, device-attributed, no JWT handling needed).
   if (cfg.device_token) {
     try {
-      const res = await fetch(PROMPTGUARD_CONFIG.FUNCTIONS_BASE + '/log-event', {
+      const res = await fetch(CFG.FUNCTIONS_BASE + '/log-event', {
         method: 'POST',
         headers: deviceHeaders(cfg.device_token),
         body: JSON.stringify({
