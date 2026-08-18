@@ -29,3 +29,6 @@ Thumbs.db
 
 # Third-party extension artifacts for competitive analysis (not our code)
 research/
+
+# Supabase CLI local artifacts
+supabase/.temp/
