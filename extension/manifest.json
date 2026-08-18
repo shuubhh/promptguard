@@ -6,7 +6,8 @@
   "permissions": [
     "storage",
     "activeTab",
-    "scripting"
+    "scripting",
+    "alarms"
   ],
   "host_permissions": [
     "https://chatgpt.com/*",
@@ -17,6 +18,7 @@
     "https://chat.deepseek.com/*",
     "https://copilot.microsoft.com/*",
     "https://perplexity.ai/*",
+    "https://aefujtgikbengcwwhlgq.supabase.co/*",
     "https://your-backend-url.com/*"
   ],
   "background": {

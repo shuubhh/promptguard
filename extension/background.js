@@ -11,6 +11,20 @@
  */
 'use strict';
 
+// Baked-in defaults for the SaaS instance (public anon key; RLS protects data).
+// Guarded so the Node test sandbox (no importScripts) still loads cleanly.
+if (typeof importScripts === 'function') {
+  try {
+    importScripts('config.js');
+  } catch (err) {
+    /* non-fatal */
+  }
+}
+if (typeof PROMPTGUARD_CONFIG === 'undefined') {
+  // eslint-disable-next-line no-var
+  var PROMPTGUARD_CONFIG = { SUPABASE_URL: '', SUPABASE_ANON_KEY: '', FUNCTIONS_BASE: '' };
+}
+
 // The event payload matches the Supabase `events` table schema from the brief.
 // The real endpoint is configured at runtime via the popup
 // (supabase_url + supabase_anon_key + auth_token).
@@ -61,6 +75,159 @@ chrome.storage.onChanged.addListener((changes, area) => {
 });
 
 // ------------------------------------------------------------------
+// v2: org join + device management
+// ------------------------------------------------------------------
+// A device = one browser instance that joined an org with a single-use code.
+// The extension then identifies itself with a device token (stored hashed
+// server-side), heartbeats every minute (tamper detection: a stopped
+// heartbeat = "protection off"), and polls org config every few minutes so
+// policy/feature-flag/fingerprint changes reach it without the old manual
+// "Save & Fetch Projects" step.
+const HEARTBEAT_PERIOD_MIN = 1;
+const CONFIG_POLL_PERIOD_MIN = 3;
+
+function deviceHeaders(token) {
+  return {
+    apikey: PROMPTGUARD_CONFIG.SUPABASE_ANON_KEY,
+    'Content-Type': 'application/json',
+    Authorization: 'Bearer ' + token
+  };
+}
+
+async function getDevice() {
+  try {
+    const s = await chrome.storage.local.get([
+      'device_token', 'device_id', 'device_org', 'device_user_email',
+      'org_policy', 'feature_flags'
+    ]);
+    if (!s.device_token) return null;
+    return {
+      token: s.device_token,
+      device_id: s.device_id || null,
+      org_id: s.device_org ? s.device_org.id : null,
+      org_name: s.device_org ? s.device_org.name : null,
+      user_email: s.device_user_email || '',
+      policy: s.org_policy || null,
+      feature_flags: s.feature_flags || {}
+    };
+  } catch (err) {
+    return null;
+  }
+}
+
+async function joinOrg(code, deviceName, userEmail) {
+  const res = await fetch(PROMPTGUARD_CONFIG.FUNCTIONS_BASE + '/join-org', {
+    method: 'POST',
+    headers: { apikey: PROMPTGUARD_CONFIG.SUPABASE_ANON_KEY, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ code: code, device_name: deviceName, user_email: userEmail })
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'join failed (HTTP ' + res.status + ')');
+
+  await chrome.storage.local.set({
+    device_token: data.device_token,
+    device_id: data.device_id,
+    device_org: { id: data.org_id, name: data.org_name },
+    device_user_email: data.user_email || userEmail || 'unknown',
+    org_policy: data.policy || {},
+    feature_flags: data.feature_flags || {},
+    org_id: data.org_id,
+    user_email: data.user_email || userEmail || 'unknown'
+  });
+  startDeviceAlarms();
+  // Pull fingerprints immediately so scanning starts right away.
+  await deviceSyncNow();
+  return data;
+}
+
+async function deviceSyncNow() {
+  const device = await getDevice();
+  if (!device) return { ok: false, error: 'no device' };
+  const res = await fetch(PROMPTGUARD_CONFIG.FUNCTIONS_BASE + '/org-config', {
+    headers: deviceHeaders(device.token)
+  });
+  if (res.status === 401) {
+    await disconnectDevice('revoked');
+    throw new Error('device revoked — rejoin your org from the popup');
+  }
+  if (!res.ok) throw new Error('config fetch failed (HTTP ' + res.status + ')');
+  const data = await res.json();
+  const projects = (data.projects || [])
+    .filter((p) => p && p.fingerprint)
+    .map((p) => ({ id: p.id, name: p.name || 'Unnamed project', fingerprint: p.fingerprint }));
+  const email = data.user_email || device.user_email || 'unknown';
+  await chrome.storage.local.set({
+    org_policy: data.policy || {},
+    feature_flags: data.feature_flags || {},
+    device_org: { id: data.org_id, name: data.org_name },
+    device_user_email: email,
+    org_id: data.org_id,
+    user_email: email,
+    projects: projects
+  });
+  return { ok: true, projects: projects.length, policy: data.policy };
+}
+
+async function heartbeat() {
+  const device = await getDevice();
+  if (!device) return;
+  try {
+    await fetch(PROMPTGUARD_CONFIG.FUNCTIONS_BASE + '/heartbeat', {
+      method: 'POST',
+      headers: deviceHeaders(device.token),
+      body: '{}'
+    });
+  } catch (err) {
+    /* heartbeat is best-effort */
+  }
+}
+
+async function disconnectDevice(reason) {
+  stopDeviceAlarms();
+  await chrome.storage.local.remove([
+    'device_token', 'device_id', 'device_org', 'device_user_email',
+    'org_policy', 'feature_flags', 'org_id', 'user_email'
+  ]);
+  return { ok: true, reason: reason || 'disconnected' };
+}
+
+function startDeviceAlarms() {
+  try {
+    chrome.alarms.create('pg-heartbeat', { periodInMinutes: HEARTBEAT_PERIOD_MIN });
+    chrome.alarms.create('pg-config-poll', { periodInMinutes: CONFIG_POLL_PERIOD_MIN });
+  } catch (err) {
+    /* alarms need the 'alarms' permission; failure is non-fatal */
+  }
+}
+
+function stopDeviceAlarms() {
+  try {
+    chrome.alarms.clear('pg-heartbeat');
+    chrome.alarms.clear('pg-config-poll');
+  } catch (err) {
+    /* ignore */
+  }
+}
+
+try {
+  chrome.alarms.onAlarm.addListener((alarm) => {
+    if (alarm.name === 'pg-heartbeat') heartbeat();
+    if (alarm.name === 'pg-config-poll') deviceSyncNow().catch(() => {});
+  });
+} catch (err) {
+  /* alarms unavailable in some sandboxes; heartbeats degrade silently */
+}
+
+// Re-register alarms + refresh config whenever the service worker wakes.
+chrome.runtime.onStartup.addListener(async () => {
+  const device = await getDevice();
+  if (device) {
+    startDeviceAlarms();
+    deviceSyncNow().catch(() => {});
+  }
+});
+
+// ------------------------------------------------------------------
 // Message handling
 // ------------------------------------------------------------------
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
@@ -96,6 +263,32 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     importProject(msg.project)
       .then(() => sendResponse({ ok: true }))
       .catch((err) => sendResponse({ ok: false, error: String((err && err.message) || err) }));
+    return true;
+  }
+
+  if (msg.type === 'PG_JOIN_ORG') {
+    joinOrg(msg.code, msg.device_name, msg.user_email)
+      .then((data) => sendResponse({ ok: true, org_name: data.org_name }))
+      .catch((err) => sendResponse({ ok: false, error: String((err && err.message) || err) }));
+    return true;
+  }
+
+  if (msg.type === 'PG_SYNC_NOW') {
+    deviceSyncNow()
+      .then((r) => sendResponse({ ok: true, projects: r.projects, policy: r.policy }))
+      .catch((err) => sendResponse({ ok: false, error: String((err && err.message) || err) }));
+    return true;
+  }
+
+  if (msg.type === 'PG_DISCONNECT_DEVICE') {
+    disconnectDevice(msg.reason).then((r) => sendResponse(r));
+    return true;
+  }
+
+  if (msg.type === 'PG_GET_DEVICE_STATE') {
+    getDevice()
+      .then((d) => sendResponse({ device: d }))
+      .catch(() => sendResponse({ device: null }));
     return true;
   }
 
@@ -170,7 +363,8 @@ function isSyncableEvent(event) {
   return !!(
     event &&
     event.event_type &&
-    event.event_type !== 'silent' &&
+    // Monitor-only orgs explicitly want visibility into silent scans too.
+    (event.event_type !== 'silent' || event.monitor_only === true) &&
     event.match_type !== 'connection_test'
   );
 }
@@ -379,10 +573,39 @@ async function getBackendToken(supabaseUrl, anonKey) {
 async function syncEventToBackend(event) {
   let cfg = null;
   try {
-    cfg = await chrome.storage.local.get(['supabase_url', 'supabase_anon_key', 'auth_token', 'org_id', 'user_email']);
+    cfg = await chrome.storage.local.get(['supabase_url', 'supabase_anon_key', 'auth_token', 'org_id', 'user_email', 'device_token']);
   } catch (err) {
     return false;
   }
+
+  // v2 path: a device-joined extension syncs through the log-event edge
+  // function (server-validated, device-attributed, no JWT handling needed).
+  if (cfg.device_token) {
+    try {
+      const res = await fetch(PROMPTGUARD_CONFIG.FUNCTIONS_BASE + '/log-event', {
+        method: 'POST',
+        headers: deviceHeaders(cfg.device_token),
+        body: JSON.stringify({
+          event_type: event.event_type,
+          confidence: event.confidence,
+          match_type: event.match_type,
+          match_preview: event.match_preview,
+          platform: event.platform,
+          project_id: event.project_id || null,
+          monitor_only: event.monitor_only === true ? true : null,
+          timestamp: event.timestamp || new Date().toISOString()
+        })
+      });
+      if (res.status === 401) {
+        disconnectDevice('revoked'); // popup will prompt to re-join
+        return false;
+      }
+      return res.ok;
+    } catch (err) {
+      return false; // stays queued; retried with backoff
+    }
+  }
+
   const supabaseUrl = cfg.supabase_url || '';
   const anonKey = cfg.supabase_anon_key || '';
   let authToken = cfg.auth_token || '';

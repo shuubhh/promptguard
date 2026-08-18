@@ -18,6 +18,108 @@ export default function Settings() {
   const [refreshToken, setRefreshToken] = useState('');
   const [copied, setCopied] = useState('');
 
+  // v2: org-management (device join codes, connected devices, org policy)
+  const [joinCode, setJoinCode] = useState('');
+  const [codeExpiry, setCodeExpiry] = useState('');
+  const [devices, setDevices] = useState([]);
+  const [warnThreshold, setWarnThreshold] = useState('0.7');
+  const [blockThreshold, setBlockThreshold] = useState('0.9');
+  const [monitorOnly, setMonitorOnly] = useState(false);
+  const [orgBusy, setOrgBusy] = useState(false);
+  const [orgMsg, setOrgMsg] = useState('');
+  const [orgMsgError, setOrgMsgError] = useState(false);
+
+  /** Call the org-admin edge function with the signed-in user's JWT. */
+  async function callOrgAdmin(action, payload) {
+    const { data: sessionData } = await supabase.auth.getSession();
+    const token = sessionData && sessionData.session ? sessionData.session.access_token : null;
+    if (!token) throw new Error('Not signed in');
+    const base = import.meta.env.VITE_SUPABASE_URL + '/functions/v1/org-admin';
+    const res = await fetch(base, {
+      method: 'POST',
+      headers: {
+        apikey: import.meta.env.VITE_SUPABASE_ANON_KEY,
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer ' + token
+      },
+      body: JSON.stringify({ action: action, ...payload })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || 'Request failed (' + res.status + ')');
+    return data;
+  }
+
+  function flashOrgMsg(text, isError) {
+    setOrgMsg(text);
+    setOrgMsgError(!!isError);
+  }
+
+  async function loadOrgManagement() {
+    if (!orgId) return;
+    try {
+      const r = await callOrgAdmin('list_devices', {});
+      setDevices(Array.isArray(r.devices) ? r.devices : []);
+    } catch (err) {
+      /* device list is non-fatal */
+    }
+    try {
+      const { data: orgRow } = await supabase
+        .from('organisations')
+        .select('warn_threshold, block_threshold, monitor_only')
+        .eq('id', orgId)
+        .single();
+      if (orgRow) {
+        setWarnThreshold(String(orgRow.warn_threshold ?? 0.7));
+        setBlockThreshold(String(orgRow.block_threshold ?? 0.9));
+        setMonitorOnly(!!orgRow.monitor_only);
+      }
+    } catch (err) {
+      /* policy load is non-fatal */
+    }
+  }
+
+  async function generateJoinCode() {
+    setOrgBusy(true);
+    flashOrgMsg('', false);
+    try {
+      const r = await callOrgAdmin('create_code', {});
+      setJoinCode(r.code);
+      setCodeExpiry(new Date(r.expires_at).toLocaleString());
+      flashOrgMsg('Code generated — single use, expires ' + new Date(r.expires_at).toLocaleTimeString());
+    } catch (err) {
+      flashOrgMsg(err && err.message ? err.message : 'Failed to generate code', true);
+    } finally {
+      setOrgBusy(false);
+    }
+  }
+
+  async function revokeDevice(id) {
+    try {
+      await callOrgAdmin('revoke_device', { device_id: id });
+      await loadOrgManagement();
+    } catch (err) {
+      flashOrgMsg(err && err.message ? err.message : 'Revoke failed', true);
+    }
+  }
+
+  async function savePolicy(e) {
+    e.preventDefault();
+    setOrgBusy(true);
+    flashOrgMsg('', false);
+    try {
+      const r = await callOrgAdmin('update_policy', {
+        warn_threshold: parseFloat(warnThreshold),
+        block_threshold: parseFloat(blockThreshold),
+        monitor_only: monitorOnly
+      });
+      flashOrgMsg('Policy saved — pushed to connected extensions within ~3 minutes');
+    } catch (err) {
+      flashOrgMsg(err && err.message ? err.message : 'Save failed', true);
+    } finally {
+      setOrgBusy(false);
+    }
+  }
+
   useEffect(() => {
     if (org) setOrgName(org.name || '');
   }, [org]);
@@ -37,6 +139,11 @@ export default function Settings() {
       }
     });
   }, []);
+
+  useEffect(() => {
+    if (orgId) loadOrgManagement();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [orgId]);
 
   async function handleSaveOrg(e) {
     e.preventDefault();
@@ -129,6 +236,139 @@ export default function Settings() {
               />
             </div>
           </div>
+        </div>
+      </Card>
+
+      <Card>
+        <CardHeader
+          title="Protect my browser"
+          subtitle="One-time codes let your developers connect their extension with zero manual setup — no URL or keys to paste. Connected devices report heartbeats; a stopped heartbeat shows as 'protection off'."
+        />
+        <div className="space-y-6">
+          <div>
+            <div className="flex flex-wrap items-center gap-3">
+              <Button onClick={generateJoinCode} disabled={orgBusy}>
+                {orgBusy ? 'Generating…' : 'Generate org code'}
+              </Button>
+              {joinCode ? (
+                <>
+                  <code className="rounded-lg border border-line bg-navy px-4 py-2 text-xl font-extrabold tracking-[0.3em] text-warning">
+                    {joinCode}
+                  </code>
+                  <Button variant="outline" onClick={() => copy(joinCode, 'code')}>
+                    {copied === 'code' ? '✓ Copied' : 'Copy'}
+                  </Button>
+                  <span className="text-xs text-muted">Single use · expires {codeExpiry}</span>
+                </>
+              ) : null}
+            </div>
+            {orgMsg ? <p className={"mt-2 text-sm " + (orgMsgError ? 'text-accent' : 'text-emerald-400')}>{orgMsg}</p> : null}
+            <p className="mt-2 text-xs text-muted">
+              Give this code to one developer. They paste it into the extension popup →
+              <b> Protect this browser</b>. Codes are single-use and expire after an hour.
+            </p>
+          </div>
+
+          <div>
+            <h3 className="mb-2 text-sm font-bold text-white">Connected devices</h3>
+            {devices.length === 0 ? (
+              <p className="text-xs text-muted">No extensions connected yet.</p>
+            ) : (
+              <div className="overflow-hidden rounded-lg border border-line">
+                <table className="w-full text-left text-xs">
+                  <thead className="bg-navy text-muted">
+                    <tr>
+                      <th className="px-3 py-2">User</th>
+                      <th className="px-3 py-2">Device</th>
+                      <th className="px-3 py-2">Last seen</th>
+                      <th className="px-3 py-2">Status</th>
+                      <th className="px-3 py-2"></th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-line">
+                    {devices.map((d) => {
+                      const revoked = !!d.revoked_at;
+                      const lastSeen = d.last_seen_at
+                        ? new Date(d.last_seen_at).toLocaleString()
+                        : '—';
+                      const stale = !revoked && d.last_seen_at && Date.now() - new Date(d.last_seen_at).getTime() > 10 * 60 * 1000;
+                      return (
+                        <tr key={d.id} className="text-soft">
+                          <td className="px-3 py-2">{d.user_email}</td>
+                          <td className="px-3 py-2">{d.device_name || '—'}</td>
+                          <td className="px-3 py-2">{lastSeen}</td>
+                          <td className="px-3 py-2">
+                            {revoked ? (
+                              <Badge tone="red">Revoked</Badge>
+                            ) : stale ? (
+                              <Badge tone="amber">Protection off</Badge>
+                            ) : (
+                              <Badge tone="green">Active</Badge>
+                            )}
+                          </td>
+                          <td className="px-3 py-2 text-right">
+                            {!revoked ? (
+                              <button
+                                className="text-xs font-bold text-accent hover:underline cursor-pointer"
+                                onClick={() => revokeDevice(d.id)}
+                              >
+                                Revoke
+                              </button>
+                            ) : null}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            <p className="mt-2 text-xs text-muted">
+              A device is flagged <b>Protection off</b> when no heartbeat has arrived for
+              10+ minutes — a sign the user disabled or removed the extension.
+            </p>
+          </div>
+
+          <form onSubmit={savePolicy} className="space-y-3">
+            <h3 className="text-sm font-bold text-white">Org policy</h3>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div>
+                <Input
+                  label="Modal warning threshold (0–1)"
+                  value={warnThreshold}
+                  onChange={(e) => setWarnThreshold(e.target.value)}
+                />
+                <p className="mt-1 text-[11px] text-muted">
+                  Confidence at/above which the modal warning shows. Default 0.7.
+                </p>
+              </div>
+              <div>
+                <Input
+                  label="Critical block threshold (0–1)"
+                  value={blockThreshold}
+                  onChange={(e) => setBlockThreshold(e.target.value)}
+                />
+                <p className="mt-1 text-[11px] text-muted">
+                  Confidence at/above which the send is blocked (3s lockout). Default 0.9.
+                </p>
+              </div>
+            </div>
+            <label className="flex cursor-pointer items-center gap-2 text-sm text-soft">
+              <input
+                type="checkbox"
+                checked={monitorOnly}
+                onChange={(e) => setMonitorOnly(e.target.checked)}
+                className="h-4 w-4 accent-[#e94560]"
+              />
+              Monitor-only mode — observe and log everything, never block or warn
+            </label>
+            <Button type="submit" disabled={orgBusy}>
+              {orgBusy ? 'Saving…' : 'Save policy'}
+            </Button>
+            <span className="ml-3 text-xs text-muted">
+              Changes reach connected extensions within ~3 minutes (config poll).
+            </span>
+          </form>
         </div>
       </Card>
 

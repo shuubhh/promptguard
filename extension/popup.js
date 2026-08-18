@@ -60,6 +60,92 @@ function setStatus(text, isError) {
   el.className = 'pg-save-status' + (isError ? ' error' : '');
 }
 
+function setJoinStatus(text, isError) {
+  const el = $('joinStatus');
+  el.textContent = text;
+  el.className = 'pg-save-status' + (isError ? ' error' : '');
+}
+
+function setOrgStatus(text, isError) {
+  const el = $('orgStatus');
+  el.textContent = text;
+  el.className = 'pg-save-status' + (isError ? ' error' : '');
+}
+
+// ------------------------------------------------------------------
+// v2: org join (device-token flow — no manual Supabase credentials)
+// ------------------------------------------------------------------
+function setOrgUi(device) {
+  const joined = !!device && !!device.token;
+  $('orgJoined').hidden = !joined;
+  $('orgJoinForm').hidden = joined;
+  if (joined) {
+    $('orgNameLabel').textContent = device.org_name || 'Connected org';
+    $('orgEmailLabel').textContent = device.user_email || '';
+  }
+}
+
+async function loadOrgState() {
+  try {
+    const res = await chrome.runtime.sendMessage({ type: 'PG_GET_DEVICE_STATE' });
+    setOrgUi(res && res.device);
+  } catch (err) {
+    /* background not ready */
+  }
+}
+
+async function joinOrg() {
+  const code = $('orgCode').value.trim().toUpperCase();
+  const email = $('orgEmail').value.trim();
+  if (code.length < 6) {
+    setJoinStatus('Enter the org code from your admin', true);
+    return;
+  }
+  setJoinStatus('Joining…', false);
+  try {
+    const res = await chrome.runtime.sendMessage({
+      type: 'PG_JOIN_ORG',
+      code: code,
+      device_name: /Edg\//.test(navigator.userAgent) ? 'Edge' : /Firefox\//.test(navigator.userAgent) ? 'Firefox' : 'Chrome',
+      user_email: email
+    });
+    if (!res || !res.ok) {
+      setJoinStatus(res && res.error ? res.error : 'Join failed', true);
+      return;
+    }
+    setJoinStatus('Joined ' + (res.org_name || '') + ' — projects loaded', false);
+    await loadOrgState();
+    loadStateIntoForm(); // refresh project/stats counts
+  } catch (err) {
+    setJoinStatus('Error: ' + (err && err.message ? err.message : err), true);
+  }
+}
+
+async function syncNow() {
+  setOrgStatus('Syncing…', false);
+  try {
+    const res = await chrome.runtime.sendMessage({ type: 'PG_SYNC_NOW' });
+    if (!res || !res.ok) {
+      setOrgStatus(res && res.error ? res.error : 'Sync failed', true);
+      return;
+    }
+    setOrgStatus('Synced — ' + res.projects + ' project(s)', false);
+    loadStateIntoForm();
+  } catch (err) {
+    setOrgStatus('Error: ' + (err && err.message ? err.message : err), true);
+  }
+}
+
+async function disconnect() {
+  try {
+    await chrome.runtime.sendMessage({ type: 'PG_DISCONNECT_DEVICE' });
+    setOrgUi(null);
+    loadStateIntoForm();
+  } catch (err) {
+    /* ignore */
+  }
+}
+
 // ------------------------------------------------------------------
 // Token helpers
 // ------------------------------------------------------------------
@@ -326,7 +412,11 @@ async function clearLogs() {
 
 document.addEventListener('DOMContentLoaded', () => {
   loadStateIntoForm();
+  loadOrgState();
   $('saveBtn').addEventListener('click', saveAndFetchProjects);
   $('testBtn').addEventListener('click', testConnection);
   $('clearLogsBtn').addEventListener('click', clearLogs);
+  $('joinBtn').addEventListener('click', joinOrg);
+  $('syncNowBtn').addEventListener('click', syncNow);
+  $('disconnectBtn').addEventListener('click', disconnect);
 });

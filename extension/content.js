@@ -31,6 +31,8 @@
   // Org/identity info from the dashboard connection (popup), used in audit
   // events so the Supabase `events` table gets org_id + user_email.
   let orgIdentity = { org_id: null, user_email: '' };
+  // Org-level policy pushed to the extension (v2): thresholds + monitor-only.
+  let orgPolicy = null;
   // Reuses the last decision for an identical body within 5s — prevents
   // double modals when the same prompt is sent via fetch AND XHR, or when a
   // blocked request is automatically retried by the platform.
@@ -80,6 +82,7 @@
       match_type: top ? top.key : 'none',
       match_label: top ? top.label : 'none',
       match_preview: top ? String(top.matchedText).slice(0, 30) : '',
+      monitor_only: result.monitor_only === true ? true : null,
       project_id: result.topProject ? result.topProject.id : null,
       project_name: result.topProject
         ? result.topProject.name
@@ -131,7 +134,19 @@
           return;
         }
 
-        const result = await PG.scanContent(body);
+        const result = applyOrgPolicy(await PG.scanContent(body));
+
+        // Monitor-only orgs: observe and log everything, but never intervene.
+        if (result.monitor_only === true) {
+          const eventType =
+            result.level === 'critical' ? 'blocked' :
+            result.level === 'modal' || result.level === 'soft' ? 'warned' : 'silent';
+          logEvent(eventType, Object.assign({}, result, { monitor_only: true }), url);
+          PG.updateStatusBadge('silent');
+          sendDecision('allow');
+          return;
+        }
+
         const action = await decideAction(result, url);
 
         let redactedBody;
@@ -189,6 +204,27 @@
     }
   }
 
+  /**
+   * Apply the org's pushed policy on top of the scanner-engine result:
+   * warn_threshold shifts where the modal starts, block_threshold where it
+   * becomes critical, and monitor_only forces observation-only behaviour.
+   * With defaults (0.7 / 0.9 / false) this is identical to the brief ladder.
+   */
+  function applyOrgPolicy(result) {
+    if (!orgPolicy || typeof orgPolicy !== 'object' || typeof result !== 'object') return result;
+    const warn = typeof orgPolicy.warn_threshold === 'number' ? orgPolicy.warn_threshold : 0.7;
+    const block = typeof orgPolicy.block_threshold === 'number' ? orgPolicy.block_threshold : 0.9;
+    const c = result.confidence || 0;
+    let level = 'silent';
+    if (c >= 0.5 && c < warn) level = 'soft';
+    else if (c >= warn && c < block) level = 'modal';
+    else if (c >= block) level = 'critical';
+    return Object.assign({}, result, {
+      level: level,
+      monitor_only: orgPolicy.monitor_only === true ? true : (result.monitor_only === true)
+    });
+  }
+
   // ------------------------------------------------------------------
   // Bridge listeners (registered synchronously so the MAIN world can
   // start scanning immediately)
@@ -214,16 +250,17 @@
       if (PG.initStatusBadge) await PG.initStatusBadge();
       await PG.loadProjects();
       try {
-        const idState = await chrome.storage.local.get(['org_id', 'user_email']);
+        const idState = await chrome.storage.local.get(['org_id', 'user_email', 'org_policy']);
         orgIdentity = {
           org_id: idState.org_id || null,
           user_email: idState.user_email || ''
         };
+        orgPolicy = idState.org_policy || null;
       } catch (err) {
         /* ignore */
       }
-      // Live-refresh fingerprints + identity when the popup/dashboard syncs,
-      // so no tab reload is needed after connecting.
+      // Live-refresh fingerprints + identity + policy when the popup/background
+      // syncs, so no tab reload is needed after connecting.
       chrome.storage.onChanged.addListener((changes, area) => {
         if (area !== 'local') return;
         if (changes.projects) {
@@ -234,6 +271,9 @@
         }
         if (changes.user_email && typeof changes.user_email.newValue === 'string') {
           orgIdentity.user_email = changes.user_email.newValue;
+        }
+        if (changes.org_policy && typeof changes.org_policy.newValue === 'object') {
+          orgPolicy = changes.org_policy.newValue;
         }
       });
     } catch (err) {

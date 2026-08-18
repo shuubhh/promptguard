@@ -16,6 +16,34 @@
     </header>
 
     <section class="pg-section">
+      <h2>Protect this browser</h2>
+      <p class="pg-hint">
+        Ask your admin for a one-time org code, or generate one in Dashboard →
+        Settings → Protect my browser. No URL or keys to paste.
+      </p>
+      <div id="orgJoined" hidden>
+        <p class="pg-hint">
+          <b id="orgNameLabel">—</b> · <span id="orgEmailLabel"></span>
+        </p>
+        <div class="pg-row">
+          <button id="syncNowBtn" class="pg-btn pg-btn-primary" type="button">Sync now</button>
+          <button id="disconnectBtn" class="pg-btn pg-btn-ghost" type="button">Disconnect</button>
+          <span id="orgStatus" class="pg-save-status"></span>
+        </div>
+      </div>
+      <div id="orgJoinForm">
+        <label class="pg-label" for="orgCode">Org code</label>
+        <input id="orgCode" class="pg-input" type="text" placeholder="e.g. K7XQM2NP" maxlength="16" />
+        <label class="pg-label" for="orgEmail">Work email (optional)</label>
+        <input id="orgEmail" class="pg-input" type="email" placeholder="you@company.com" />
+        <div class="pg-row">
+          <button id="joinBtn" class="pg-btn pg-btn-primary" type="button">Join org</button>
+          <span id="joinStatus" class="pg-save-status"></span>
+        </div>
+      </div>
+    </section>
+
+    <section class="pg-section">
       <h2>Dashboard connection</h2>
       <p class="pg-hint">
         Paste the Supabase URL, the anon key, and the API key (JWT) from

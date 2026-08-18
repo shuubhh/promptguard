@@ -1,0 +1,17 @@
+# Supabase CLI config — used for edge-function deployment via the Management API.
+project_id = "promptguard"
+
+[functions.join-org]
+verify_jwt = false
+
+[functions.org-config]
+verify_jwt = false
+
+[functions.heartbeat]
+verify_jwt = false
+
+[functions.log-event]
+verify_jwt = false
+
+[functions.org-admin]
+verify_jwt = false

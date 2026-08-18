@@ -236,6 +236,42 @@ extension storage or signing out of the dashboard (both invalidate it
 server-side). Note that the refresh token is shared with your dashboard session:
 if either side rotates it, the other may need a re-login/re-copy.
 
+## v2 — Org auto-config (zero manual setup) — manual test
+
+The v2 flow connects the extension to an org with a single one-time code.
+No Supabase URL / anon key / JWT pasting needed (the anon key is baked into
+`config.js` — it's public by design, RLS protects the data).
+
+1. **Dashboard** → Settings → **Protect my browser** → **Generate org code**.
+   Copy the code (single-use, expires in an hour).
+2. `chrome://extensions` → reload PromptGuard, then open its popup
+   (🛡️ toolbar icon). The **Protect this browser** section is at the top.
+3. Paste the code (and optionally your work email) → **Join org**.
+   Expect: *"Joined <org> — projects loaded"*, the section switches to the
+   connected state (org name + email + **Sync now** / **Disconnect**), and
+   the Projects count shows the org's fingerprints.
+4. Wait ~1 minute, then in the dashboard the device appears in
+   **Connected devices** with status **Active**. Heartbeats every 60s keep it
+   active; a stopped heartbeat for 10+ min flags it **Protection off**.
+5. **Policy push:** change the thresholds or toggle **Monitor-only** in the
+   dashboard → Save. The extension picks it up within ~3 minutes (config
+   poll); a silent-level event in monitor-only mode now syncs to the audit
+   log. Toggling **Monitor-only on** makes the extension log but never
+   block/warn.
+6. **Revoke:** dashboard → **Revoke** on the device. The extension's next
+   call gets 401 and disconnects itself — the popup prompts to re-join.
+
+Under the hood (see `background.js`): `join-org` → device token stored in
+`chrome.storage.local`; `chrome.alarms` drive a 1-min heartbeat and a 3-min
+`org-config` poll (policy + flags + fingerprints, replacing the manual
+"Save & Fetch Projects" for joined devices); events sync through the
+`log-event` edge function with the device token (server-validated,
+device-attributed). The legacy manual connection (Supabase URL + anon +
+JWT/refresh token) still works and is used when no device token is present.
+
+Backend: `supabase/functions/{join-org,org-config,heartbeat,log-event,org-admin}`,
+migration `dashboard/supabase/migrations/004_org_management.sql`.
+
 ## Notes
 
 - **OpenAI migrated ChatGPT to `chatgpt.com`.** The manifest covers both
