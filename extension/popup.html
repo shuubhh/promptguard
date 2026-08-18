@@ -44,6 +44,24 @@
     </section>
 
     <section class="pg-section">
+      <h2>On-device AI (Gemini Nano)</h2>
+      <p class="pg-hint">
+        Optional semantic engine: catches paraphrased client code and pasted
+        logs that regex misses. Runs 100% on your device — no data leaves the
+        browser.
+      </p>
+      <div id="aiStatus" class="pg-ai-status">Checking availability…</div>
+      <div id="aiProgressWrap" hidden>
+        <div class="pg-progress"><div id="aiProgressBar" class="pg-progress-fill"></div></div>
+        <span id="aiProgressLabel" class="pg-save-status"></span>
+      </div>
+      <div id="aiButtons" class="pg-row">
+        <button id="aiEnableBtn" class="pg-btn pg-btn-primary" type="button" hidden>Enable on-device AI</button>
+        <button id="aiDisableBtn" class="pg-btn pg-btn-outline" type="button" hidden>Disable</button>
+      </div>
+    </section>
+
+    <section class="pg-section">
       <h2>Dashboard connection</h2>
       <p class="pg-hint">
         Paste the Supabase URL, the anon key, and the API key (JWT) from
@@ -83,6 +101,7 @@
       <span>PromptGuard v0.1.0 · local storage only</span>
     </footer>
   </div>
+  <script src="ai-engine.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

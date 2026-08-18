@@ -28,9 +28,12 @@ const { execFileSync } = require('child_process');
 const repoRoot = path.join(__dirname, '..', '..');
 const tmpFp = path.join(os.tmpdir(), 'pg-live-fingerprint-' + Date.now() + '.json');
 const py = process.env.PY || 'py';
+// `research/` holds downloaded third-party competitor bundles (gitignored dev
+// scratch) — scanning it would fingerprint minified vendor code, so exclude it
+// from the self-scan.
 execFileSync(
   py,
-  ['scanner/promptguard_scanner.py', '.', '--name', 'promptguard', '--output', tmpFp],
+  ['scanner/promptguard_scanner.py', '.', '--name', 'promptguard', '--output', tmpFp, '--exclude', 'research'],
   { cwd: repoRoot, stdio: ['ignore', 'ignore', 'pipe'] }
 );
 const fpRaw = fs.readFileSync(tmpFp, 'utf8');
@@ -47,37 +50,28 @@ const PROJECT = {
 // ------------------------------------------------------------------
 // Environment stubs (same shape as run-scanner-tests.js)
 // ------------------------------------------------------------------
-let aiRespondWith = 'unavailable';
-const listeners = {};
+let aiRespondWith = 'unavailable'; // 'unavailable' | 'SENSITIVE' | 'POSSIBLY_SENSITIVE' | 'SAFE'
 
 global.window = {
   __PromptGuard: {},
   location: { hostname: 'chatgpt.com', href: 'https://chatgpt.com/' },
-  addEventListener: (name, fn) => {
-    (listeners[name] = listeners[name] || []).push(fn);
-  },
+  addEventListener: () => {},
   removeEventListener: () => {},
-  dispatchEvent: (ev) => {
-    if (ev && ev.type === 'promptguard:ai-request') {
-      const d = ev.detail || {};
-      const respond = (payload) => {
-        const resp = new global.CustomEvent('promptguard:ai-response', {
-          detail: Object.assign({ requestId: d.requestId }, payload)
-        });
-        for (const fn of listeners['promptguard:ai-response'] || []) fn(resp);
-      };
-      setTimeout(() => {
-        if (aiRespondWith === 'unavailable') respond({ ok: false, error: 'ai-unavailable' });
-        else respond({ ok: true, label: aiRespondWith });
-      }, 0);
-    }
-  }
+  dispatchEvent: () => true
 };
 
 global.chrome = {
   runtime: {
     id: 'test',
-    getURL: (p) => 'file:///extension/' + p
+    getURL: (p) => 'file:///extension/' + p,
+    // AI now runs in the offscreen document via the background worker.
+    sendMessage: async (msg) => {
+      if (msg && msg.type === 'PG_AI_REQUEST') {
+        if (aiRespondWith === 'unavailable') return { ok: false, error: 'ai-unavailable' };
+        return { ok: true, label: aiRespondWith };
+      }
+      return {};
+    }
   },
   storage: {
     local: {
@@ -85,6 +79,7 @@ global.chrome = {
         const want = Array.isArray(keys) ? keys : [keys];
         const out = {};
         if (want.includes('projects')) out.projects = [PROJECT];
+        if (want.includes('ai_enabled')) out.ai_enabled = true;
         return out;
       },
       set: async () => {}
@@ -143,6 +138,10 @@ const PG = global.window.__PromptGuard;
       expectLevel: 'silent'
     }
   ];
+
+  // The Gemini Nano path itself is covered by run-scanner-tests.js (controlled
+  // fixtures) and run-ai-tests.js (mocked LanguageModel). The AI here stays
+  // 'unavailable' so this check is deterministic against the live fingerprint.
 
   for (const s of samples) {
     const r = await PG.scanContent(s.text);

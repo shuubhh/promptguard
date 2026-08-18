@@ -3,6 +3,13 @@
  *
  * Fingerprint matching + confidence scoring + Chrome Built-in AI (Gemini Nano).
  *
+ * Detection layers (in order of strength):
+ *   secrets  — global hardcoded credential / PII patterns        (+0.99 each)
+ *   projects — every loaded client fingerprint (packages, class names,
+ *              internal URLs/IPs, domain vocabulary)             (+0.95 … +0.15)
+ *   context  — Layer 0 log signatures (stack traces, timestamped log lines,
+ *              internal URLs, customer identifiers)              (+0.50 … +0.75)
+ *
  * Scoring (per the project brief):
  *   exact package match            +0.95
  *   exact class name match         +0.85
@@ -12,14 +19,22 @@
  *   domain vocabulary term         +0.15 per term (max 0.45 total)
  *   final confidence capped at 0.99
  *
- * Built-in AI (Gemini Nano) is used only as a tie-breaker: it runs only when
- * the regex-only confidence is in [0.3, 0.6]. When it runs:
- *   Final_Confidence = (Regex_Score * 0.6) + (AI_Mapped_Score * 0.4)
- * with AI labels mapped SENSITIVE=0.75, POSSIBLY_SENSITIVE=0.55, SAFE=0.1.
- * If the AI is unavailable or does not answer within 2.5s, we silently fall
- * back to the regex score. The AI itself is executed in the MAIN world (where
- * window.ai actually exists) through the promptguard:ai-request/ai-response
- * CustomEvent bridge — see page-interceptor.js.
+ * Built-in AI (Gemini Nano) — a second, semantic engine:
+ *   - Runs ONLY when the regex-only score is ambiguous AND there is evidence
+ *     worth adjudicating:
+ *       a) regex score in [0.3, 0.6]  (the classic fuzzy zone), OR
+ *       b) a Layer-0 log signature matched (support-engineer surface) while
+ *          regex <= 0.7 (above that the deterministic match already decided).
+ *   - When it runs: Final = (Regex * 0.6) + (AI_Mapped * 0.4) with labels
+ *     mapped SENSITIVE=0.75, POSSIBLY_SENSITIVE=0.55, SAFE=0.1.
+ *   - Inference happens in an OFFSCREEN DOCUMENT (the Prompt API is not
+ *     available in workers or content scripts): runAIClassifier() sends
+ *     PG_AI_REQUEST to the background service worker, which relays it. Any
+ *     failure (model unavailable, timeout, offscreen missing) silently falls
+ *     back to the regex score — scanning never blocks on the AI.
+ *
+ * AI gating: the user enables on-device AI in the popup (ai_enabled), and an
+ * org admin can force it on/off via the organisation's feature_flags.ai.
  */
 (function () {
   'use strict';
@@ -29,20 +44,19 @@
   // ------------------------------------------------------------------
   // Constants (match the brief exactly)
   // ------------------------------------------------------------------
-  const AI_SYSTEM_PROMPT =
-    'You are a code-security classifier. Analyze if the input contains specific hardcoded internal domain names (e.g., `com.clientname`), explicit credentials, internal IPs, or unique internal project codenames. Ignore generic programming syntax (loops, imports, standard libraries). If it contains explicit unique identifiers for a specific company, output SENSITIVE. If it contains financial/banking jargon but no explicit names, output POSSIBLY_SENSITIVE. If it is generic public code or natural language, output SAFE. Reply ONLY in JSON format: {"label": "SENSITIVE|POSSIBLE|SAFE", "reason": "short reason"}.';
-
   const AI_LABEL_SCORES = {
     SENSITIVE: 0.75,
     POSSIBLY_SENSITIVE: 0.55,
-    // the system prompt occasionally prints "POSSIBLE" — accept both spellings
+    // the model occasionally prints "POSSIBLE" — accept both spellings
     POSSIBLE: 0.55,
     SAFE: 0.1
   };
 
-  const AI_TIMEOUT_MS = 2500;          // 2.5s hard cap on session.prompt()
-  const AI_FUZZY_MIN = 0.3;            // run AI only when regex score is in…
-  const AI_FUZZY_MAX = 0.6;            // …this fuzzy zone; > 0.6 skip AI entirely
+  const MIN_FP_STR_LEN = 4; // fingerprint strings below this length are ignored
+  const AI_ROUNDTRIP_TIMEOUT_MS = 5000; // content -> background -> offscreen -> back
+  const AI_FUZZY_MIN = 0.3; // run AI only when regex score is in…
+  const AI_FUZZY_MAX = 0.6; // …this fuzzy zone
+  const AI_MIN_TEXT_LEN = 40; // skip AI on trivial inputs
   const MAX_CONFIDENCE = 0.99;
   const MAX_VOCAB_SCORE = 0.45;
   const VOCAB_PER_TERM = 0.15;
@@ -132,6 +146,23 @@
     };
   }
 
+  /**
+   * Whether the semantic engine may run. The org admin can force it via
+   * feature_flags.ai ('on' | 'off'); otherwise the user's popup toggle
+   * (ai_enabled) decides. Default: off (the model download is opt-in).
+   */
+  async function isAIEnabled() {
+    try {
+      const state = await chrome.storage.local.get(['ai_enabled', 'feature_flags']);
+      const flags = (state.feature_flags && typeof state.feature_flags === 'object') ? state.feature_flags : {};
+      if (flags.ai === 'off') return false;
+      if (flags.ai === 'on') return true;
+      return state.ai_enabled === true;
+    } catch (err) {
+      return false;
+    }
+  }
+
   // ------------------------------------------------------------------
   // Per-project fingerprint scanning
   // ------------------------------------------------------------------
@@ -139,8 +170,12 @@
     const matches = [];
     let score = 0;
 
+    // MIN_FP_STR_LEN: fingerprint strings shorter than this are NOT distinctive
+    // and would match random substrings (a 1-char "class name" like "P" hits
+    // every capital P in a prompt). Defensive guard against junk that can end
+    // up in a fingerprint from any scanner or manual edit.
     for (const pkg of fingerprint.packages) {
-      if (pkg && text.includes(pkg)) {
+      if (pkg && pkg.length >= MIN_FP_STR_LEN && text.includes(pkg)) {
         score += SCORE_BY_TYPE.package_name;
         matches.push(
           makeMatch('package_name', 'Client package name', 'high', pkg, SCORE_BY_TYPE.package_name, project)
@@ -149,7 +184,7 @@
     }
 
     for (const cn of fingerprint.class_names) {
-      if (cn && text.includes(cn)) {
+      if (cn && cn.length >= MIN_FP_STR_LEN && text.includes(cn)) {
         score += SCORE_BY_TYPE.class_name;
         matches.push(
           makeMatch('class_name', 'Client class name', 'high', cn, SCORE_BY_TYPE.class_name, project)
@@ -158,7 +193,7 @@
     }
 
     for (const u of fingerprint.internal_urls) {
-      if (u && text.includes(u)) {
+      if (u && u.length >= MIN_FP_STR_LEN && text.includes(u)) {
         score += SCORE_BY_TYPE.internal_url;
         matches.push(
           makeMatch('internal_url', 'Internal URL', 'high', u, SCORE_BY_TYPE.internal_url, project)
@@ -227,7 +262,7 @@
   // ------------------------------------------------------------------
   async function scanContent(text) {
     if (!text || typeof text !== 'string' || text.trim().length < 5) {
-      return buildResult(0, 0, [], null, [], false, null, 0, false);
+      return buildResult(0, 0, [], null, [], false, null, 0, false, 0, 0, null);
     }
 
     const cacheHit = scanCache.get(text);
@@ -240,7 +275,11 @@
     // 1) Global hardcoded secrets — scanned regardless of fingerprints.
     const secretMatches = PG.scanSecrets ? PG.scanSecrets(text) : [];
 
-    // 2) Scan the text against EVERY loaded project fingerprint at once.
+    // 2) Layer 0 context — log signatures, internal URLs, customer IDs.
+    //    These never require a repo scan (the support-engineer surface).
+    const contextMatches = PG.scanContext ? PG.scanContext(text) : [];
+
+    // 3) Scan the text against EVERY loaded project fingerprint at once.
     const projectResults = [];
     for (const project of projects) {
       projectResults.push(scanProjectFingerprint(text, project.fingerprint, project));
@@ -249,17 +288,38 @@
     const projectScore = projectResults.reduce((max, pr) => Math.max(max, pr.score), 0);
     let secretScore = 0;
     for (const m of secretMatches) secretScore += m.confidence;
-    const regexScore = Math.min(MAX_CONFIDENCE, projectScore + secretScore);
+    // Context score is deliberately non-stacking: one log signature is enough
+    // evidence, and a 3-frame stack trace must NOT hard-block a developer who
+    // legitimately pastes it. Score once per pattern TYPE, capped at 0.75 — a
+    // single strong signal (internal URL) or a couple of weaker ones. Above
+    // that, fingerprints / secrets / the AI decide.
+    let contextScore = 0;
+    const contextKeys = new Set();
+    for (const m of contextMatches) {
+      if (!contextKeys.has(m.key)) {
+        contextKeys.add(m.key);
+        contextScore += m.confidence;
+      }
+    }
+    contextScore = Math.min(0.75, contextScore);
+    const regexScore = Math.min(MAX_CONFIDENCE, projectScore + secretScore + contextScore);
 
-    // 3) Built-in AI (Gemini Nano) — only in the fuzzy zone [0.3, 0.6].
-    //    regex > 0.6  -> skip AI entirely to save CPU.
-    //    regex < 0.3  -> clearly safe, skip AI.
+    // 4) Built-in AI (Gemini Nano) — semantic adjudication.
+    //    Triggers: the fuzzy zone [0.3, 0.6], OR a Layer-0 log signature that
+    //    hasn't already been decided deterministically (regex <= 0.7).
     let aiUsed = false;
     let aiLabel = null;
     let aiScore = 0;
     let finalConfidence = regexScore;
+    const hasContext = contextMatches.length > 0;
 
-    if (regexScore >= AI_FUZZY_MIN && regexScore <= AI_FUZZY_MAX) {
+    const shouldRunAI =
+      (await isAIEnabled()) &&
+      String(text).length >= AI_MIN_TEXT_LEN &&
+      ((regexScore >= AI_FUZZY_MIN && regexScore <= AI_FUZZY_MAX) ||
+        (hasContext && regexScore <= 0.7));
+
+    if (shouldRunAI) {
       const ai = await runAIClassifier(text);
       if (ai && ai.available) {
         aiUsed = true;
@@ -272,7 +332,7 @@
 
     finalConfidence = Math.min(MAX_CONFIDENCE, finalConfidence);
 
-    // 4) Collect + dedupe all matches across projects and global patterns.
+    // 5) Collect + dedupe all matches across projects, globals and context.
     const allMatches = [];
     const seen = new Set();
     for (const pr of projectResults) {
@@ -285,6 +345,13 @@
       }
     }
     for (const m of secretMatches) {
+      const id = m.key + '|' + m.matchedText;
+      if (!seen.has(id)) {
+        seen.add(id);
+        allMatches.push(m);
+      }
+    }
+    for (const m of contextMatches) {
       const id = m.key + '|' + m.matchedText;
       if (!seen.has(id)) {
         seen.add(id);
@@ -313,7 +380,10 @@
       aiUsed,
       aiLabel,
       aiScore,
-      secretMatches.length > 0
+      secretMatches.length > 0,
+      contextMatches.length,
+      contextScore,
+      aiUsed ? 'gemini-nano' : null
     );
 
     scanCache.set(text, { ts: Date.now(), result });
@@ -321,18 +391,34 @@
     return result;
   }
 
-  function buildResult(confidence, regexScore, matches, topProject, matchedProjects, aiUsed, aiLabel, aiScore, hasSecret) {
+  function buildResult(
+    confidence,
+    regexScore,
+    matches,
+    topProject,
+    matchedProjects,
+    aiUsed,
+    aiLabel,
+    aiScore,
+    hasSecret,
+    contextCount,
+    contextScore,
+    aiModel
+  ) {
     return {
       confidence: round2(confidence),
       regexScore: round2(regexScore),
       aiUsed: !!aiUsed,
       aiLabel: aiLabel || null,
       aiScore: aiScore || 0,
+      aiModel: aiModel || null,
       level: levelFor(confidence),
       matches: matches || [],
       topProject: topProject || null,
       matchedProjects: matchedProjects || [],
-      hasSecret: !!hasSecret
+      hasSecret: !!hasSecret,
+      contextCount: contextCount || 0,
+      contextScore: round2(contextScore || 0)
     };
   }
 
@@ -375,7 +461,9 @@
   }
 
   // ------------------------------------------------------------------
-  // Chrome Built-in AI (Gemini Nano) — bridged to the MAIN world
+  // Chrome Built-in AI (Gemini Nano) — routed to the offscreen document
+  // via the background service worker. Content scripts cannot host the
+  // Prompt API (not available in workers or on web pages).
   // ------------------------------------------------------------------
   function runAIClassifier(text) {
     return new Promise((resolve) => {
@@ -387,44 +475,36 @@
         }
       };
 
-      const requestId = 'pgai_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 10);
+      // Belt-and-suspenders timeout for the whole round trip so a slow or
+      // wedged background/offscreen hop can never stall a prompt send.
+      const timer = setTimeout(() => finish({ available: false }), AI_ROUNDTRIP_TIMEOUT_MS);
 
-      // Belt-and-suspenders timeout: the MAIN world enforces 2.5s on
-      // session.prompt(); this gives it a little extra room to report back.
-      const timer = setTimeout(() => {
-        window.removeEventListener('promptguard:ai-response', onResponse);
-        finish({ available: false });
-      }, AI_TIMEOUT_MS + 1000);
-
-      const onResponse = (e) => {
-        const d = (e && e.detail) || {};
-        if (d.requestId !== requestId) return;
-        window.removeEventListener('promptguard:ai-response', onResponse);
-        clearTimeout(timer);
-        if (d.ok && d.label) {
-          const score = AI_LABEL_SCORES[d.label];
-          if (typeof score === 'number') {
-            finish({ available: true, label: d.label, score });
-          } else {
-            finish({ available: true, label: d.label, score: 0 });
-          }
-        } else {
-          finish({ available: false });
-        }
-      };
-
-      window.addEventListener('promptguard:ai-response', onResponse);
+      let sendPromise;
       try {
-        window.dispatchEvent(
-          new CustomEvent('promptguard:ai-request', {
-            detail: { requestId, text: text.slice(0, 4000), systemPrompt: AI_SYSTEM_PROMPT }
-          })
-        );
+        sendPromise = chrome.runtime.sendMessage({
+          type: 'PG_AI_REQUEST',
+          text: String(text || '').slice(0, 4000)
+        });
       } catch (err) {
         clearTimeout(timer);
-        window.removeEventListener('promptguard:ai-response', onResponse);
         finish({ available: false });
+        return;
       }
+
+      Promise.resolve(sendPromise)
+        .then((res) => {
+          clearTimeout(timer);
+          if (res && res.ok && res.label) {
+            const score = AI_LABEL_SCORES[res.label];
+            finish({ available: true, label: res.label, score: typeof score === 'number' ? score : 0 });
+          } else {
+            finish({ available: false });
+          }
+        })
+        .catch(() => {
+          clearTimeout(timer);
+          finish({ available: false });
+        });
     });
   }
 
@@ -442,5 +522,6 @@
   PG.loadProjects = loadProjects;
   PG.scanContent = scanContent;
   PG.redactText = redactText;
+  PG.isAIEnabled = isAIEnabled;
   PG.getProjects = () => (cachedProjects ? cachedProjects.slice() : []);
 })();

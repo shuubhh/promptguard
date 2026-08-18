@@ -16,17 +16,21 @@ extension is split across two worlds that communicate over DOM `CustomEvent`s:
 | File                | World      | Role                                                              |
 | ------------------- | ---------- | ----------------------------------------------------------------- |
 | `page-interceptor.js` | MAIN     | Hooks the page's real `fetch` / `XHR` (requires Chrome 111+ via `"world": "MAIN"`) and bridges to the scanner |
-| `patterns.js`       | ISOLATED   | Hardcoded secret regex registry + `scanSecrets()`                 |
-| `scanner-engine.js` | ISOLATED   | Multi-project fingerprint scoring + Gemini Nano AI tie-breaker    |
+| `patterns.js`       | ISOLATED   | Secret regex registry + `scanSecrets()` + Layer-0 context `scanContext()` |
+| `scanner-engine.js` | ISOLATED   | Multi-project fingerprint + secret + context scoring, AI gating, combined confidence |
+| `ai-engine.js`      | offscreen + popup | `LanguageModel` wrapper: availability, JSON-Schema classify, verdict cache, monitor |
+| `offscreen.html/js` | offscreen document | Hosts Gemini Nano inference (Prompt API is not available in workers) |
 | `warning-modal.js`  | ISOLATED   | Soft banner, modal, critical modal (3s lockout + checkbox)        |
 | `status-badge.js`   | ISOLATED   | Floating badge with daily counts + last-5-events popup            |
-| `content.js`        | ISOLATED   | Orchestrates scanning → thresholds → UI → audit logging           |
-| `background.js`     | Service worker | Persists audit log, sets toolbar badge, syncs to backend (stub) |
+| `content.js`        | ISOLATED   | Orchestrates scanning → thresholds → UI → audit logging (AI fields) |
+| `background.js`     | Service worker | Persists audit log, sets toolbar badge, syncs to backend, routes AI to offscreen |
 
 Flow: `page-interceptor.js` wraps fetch/XHR → dispatches `promptguard:scan` →
 `content.js` runs `scanContent()` → returns `allow | cancel | redact` via
 `promptguard:decision` → interceptor either passes the request through
 (optionally with a redacted body), returns HTTP 499, or aborts the XHR.
+Ambiguous texts (fuzzy zone or log signatures) are additionally classified by
+Gemini Nano in the offscreen document via the background service worker.
 
 ## Confidence ladder (from the brief)
 
@@ -39,19 +43,85 @@ Flow: `page-interceptor.js` wraps fetch/XHR → dispatches `promptguard:scan` �
 Scoring: package +0.95 · class +0.85 · secret +0.99 · internal URL +0.75 ·
 internal IP +0.70 · vocabulary +0.15/term (max +0.45) · cap 0.99.
 
-## Chrome Built-in AI (Gemini Nano)
+## Detection layers (v2)
 
-Only used as a tie-breaker. When the regex score is in `[0.3, 0.6]`, the AI runs
-with a **2.5s `Promise.race` timeout** and the exact system prompt from the
-brief. `Final = Regex*0.6 + AI*0.4` with `SENSITIVE=0.75`,
-`POSSIBLY_SENSITIVE=0.55`, `SAFE=0.1`. Regex scores `> 0.6` skip the AI entirely
-to save CPU. If the AI is unavailable or times out, the extension **silently**
-falls back to the regex score — the user never sees an error.
+Three always-on layers, only the middle one needs a repo scan:
 
-To enable Gemini Nano (Chrome 126+): `chrome://flags/#optimization-guide-on-device-model`
-→ *Enabled BypassPerfRequirement*, then `chrome://flags/#prompt-api-for-gemini-nano`
-→ *Enabled*, restart Chrome, and download the model at `chrome://components` →
-"Optimization Guide On Device Model".
+| Layer | What it catches | Needs a fingerprint? |
+| ----- | --------------- | -------------------- |
+| **Secrets** | AWS/GitHub/Stripe keys, DB strings, JWTs, Aadhaar/PAN (+Verhoeff), passwords (entropy-gated) | No |
+| **Fingerprint** | Client packages, class names, internal URLs/IPs, domain vocabulary | Yes |
+| **Context (Layer 0)** | Java/Python stack traces, timestamped log lines, internal hostnames (`.internal`/`.corp`/...), customer/account IDs | No |
+
+The **context layer is the support-engineer surface**: pasted logs, stack
+traces and ticket excerpts leak even when the engineer never touches a repo.
+Context scores are deliberately non-stacking (a 3-frame stack trace must not
+hard-block a developer legitimately pasting it) and capped at +0.75 — they
+*elevate* the text into the AI adjudication zone instead of deciding alone.
+
+## Chrome Built-in AI (Gemini Nano) — the semantic engine
+
+The AI is a second, semantic engine, not a tie-breaker. It runs **only** when
+there is ambiguous evidence worth adjudicating:
+
+- regex score in `[0.3, 0.6]` (the classic fuzzy zone), **or**
+- a Layer-0 log signature matched and regex ≤ 0.7 (support-engineer surface)
+
+When it runs: `Final = Regex*0.6 + AI*0.4` with `SENSITIVE=0.75`,
+`POSSIBLY_SENSITIVE=0.55`, `SAFE=0.1` — classification uses **JSON-Schema
+structured output** (`responseConstraint`) with temperature 0 / topK 1 so
+verdicts are deterministic and auditable. Any failure (unavailable, timeout,
+offscreen missing) **silently** falls back to the regex score — scanning never
+blocks on the AI.
+
+**Architecture (v2 — the API changed):** the old `window.ai.languageModel`
+API is deprecated. The current surface is a global `LanguageModel` object
+(stable in Chrome Extensions since **Chrome 138**), which is *not* available in
+service workers, Web Workers, or web pages. So all inference runs in an
+**offscreen document** (`offscreen.html` + `offscreen.js`, hosted via
+`chrome.offscreen`, reason `WORKERS`):
+
+```
+content script ──PG_AI_REQUEST──> background (ensures offscreen doc)
+     ──PG_AI_INFER──> offscreen (ai-engine.js) ──verdict──> back
+```
+
+`ai-engine.js` is the single wrapper used by the offscreen document and the
+popup: `availability()` called with the **same `expectedInputs`/`expectedOutputs`
+passed to `create()`** (per the docs this is critical), a JSON-Schema
+classifier, an LRU verdict cache (identical retries never re-run the model),
+and a hard prompt timeout via `AbortController`.
+
+**The model download is user-triggered, not automatic.** Chrome downloads
+Gemini Nano (~1–2 GB, one-time, Chrome-managed, zero data sent to Google) the
+first time `create()` runs — which requires a user gesture. So the **popup**
+hosts the enable flow (a fresh click = the gesture) and streams download
+progress through the `monitor` callback. Hardware floor (per Chrome docs):
+Windows 10/11, macOS 13+, Linux or Chromebook Plus; 16 GB+ RAM **or** 4 GB+
+VRAM; 22 GB free storage.
+
+## On-device AI — manual test (Chrome 138+)
+
+1. Open the extension popup → **On-device AI (Gemini Nano)** section.
+   - It reports availability: *ready to enable* (model downloaded),
+     *available to download*, or *not available on this device*.
+2. Click **Enable on-device AI**. On first use this triggers the model
+   download — a progress bar shows the download (one-time, ~1–2 GB,
+   Chrome-managed; it can take a few minutes). Subsequent enables are
+   instant.
+3. If the device reports *not available*, check: Chrome 138+, supported OS,
+   16 GB+ RAM or 4 GB+ VRAM, and ≥ 22 GB free disk.
+4. Disable anytime with the **Disable** button (regex + fingerprint +
+   context detection keep working either way).
+
+With AI enabled, test the support-engineer case: paste a stack trace or a
+log excerpt into ChatGPT (e.g. `at com.hdfcbank.wealth.PortfolioService.reconcile(PortfolioService.java:142)`),
+and a log-signature line like `2026-08-18 09:14:22,731 ERROR PaymentProcessor Failed to settle`.
+A pasted log that Nano judges sensitive produces a **soft warning**; a safe
+one passes silently — no false alarm on legit debugging.
+
+Org admins can force the AI on/off org-wide via the organisation's
+`feature_flags.ai` (`on` / `off`) — the popup reflects this.
 
 ## File structure
 
@@ -62,6 +132,9 @@ extension/
 ├── content.js
 ├── page-interceptor.js      (MAIN world — see above)
 ├── scanner-engine.js
+├── ai-engine.js             (LanguageModel wrapper — offscreen + popup)
+├── offscreen.html           (hosts Gemini Nano inference)
+├── offscreen.js
 ├── warning-modal.js
 ├── status-badge.js
 ├── patterns.js
@@ -201,7 +274,8 @@ blocked), confidence, match type + 30-char preview, project name, and platform.
 Headless tests. Needs Node 18+:
 
 ```bash
-node extension/tests/run-scanner-tests.js        # scanner engine: 16 tests
+node extension/tests/run-scanner-tests.js        # scanner engine: 29 tests
+node extension/tests/run-ai-tests.js             # ai-engine (mocked LanguageModel): 17 tests
 node extension/tests/run-interceptor-tests.js    # fetch/XHR interception: 10 tests
 node extension/tests/run-token-tests.js          # JWT auto-refresh vs real Supabase: 8 tests
 node extension/tests/run-background-tests.js     # sync queue/retry/dedupe/reconcile: 18 tests
@@ -270,7 +344,9 @@ device-attributed). The legacy manual connection (Supabase URL + anon +
 JWT/refresh token) still works and is used when no device token is present.
 
 Backend: `supabase/functions/{join-org,org-config,heartbeat,log-event,org-admin}`,
-migration `dashboard/supabase/migrations/004_org_management.sql`.
+migrations `dashboard/supabase/migrations/004_org_management.sql` +
+`005_ai_audit.sql` (AI audit fields on events: `ai_used`, `ai_label`,
+`ai_model`, `regex_score`).
 
 ## Notes
 

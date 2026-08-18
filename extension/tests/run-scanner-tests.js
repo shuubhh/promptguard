@@ -54,43 +54,37 @@ let testProjects = [HDFC_PROJECT, APOLLO_PROJECT];
 // ------------------------------------------------------------------
 let aiRequestCount = 0;
 let aiRespondWith = 'unavailable'; // 'unavailable' | 'SENSITIVE' | 'POSSIBLY_SENSITIVE' | 'SAFE'
-
-const listeners = {};
+let aiEnabled = true; // storage ai_enabled toggle
 
 global.window = {
   __PromptGuard: {},
   location: { hostname: 'chatgpt.com', href: 'https://chatgpt.com/' },
-  addEventListener: (name, fn) => {
-    (listeners[name] = listeners[name] || []).push(fn);
-  },
+  addEventListener: () => {},
   removeEventListener: () => {},
-  dispatchEvent: (ev) => {
-    if (ev && ev.type === 'promptguard:ai-request') {
-      aiRequestCount += 1;
-      const d = ev.detail || {};
-      const respond = (payload) => {
-        const resp = new global.CustomEvent('promptguard:ai-response', {
-          detail: Object.assign({ requestId: d.requestId }, payload)
-        });
-        for (const fn of listeners['promptguard:ai-response'] || []) fn(resp);
-      };
-      setTimeout(() => {
-        if (aiRespondWith === 'unavailable') respond({ ok: false, error: 'ai-unavailable' });
-        else respond({ ok: true, label: aiRespondWith });
-      }, 0);
-    }
-  },
+  dispatchEvent: () => true,
   CustomEvent: global.CustomEvent
 };
 
 global.chrome = {
   storage: {
     local: {
-      get: async () => ({ projects: testProjects })
+      // Returns the same object regardless of requested keys, so ai_enabled
+      // and feature_flags are always present (isAIEnabled reads them).
+      get: async () => ({ projects: testProjects, ai_enabled: aiEnabled, feature_flags: {} })
     }
   },
   runtime: {
-    getURL: (p) => 'chrome-extension://test/' + p
+    getURL: (p) => 'chrome-extension://test/' + p,
+    // The AI now runs in the offscreen document, reached via the background
+    // service worker. Stub the whole round trip here.
+    sendMessage: async (msg) => {
+      if (msg && msg.type === 'PG_AI_REQUEST') {
+        aiRequestCount += 1;
+        if (aiRespondWith === 'unavailable') return { ok: false, error: 'ai-unavailable' };
+        return { ok: true, label: aiRespondWith };
+      }
+      return {};
+    }
   }
 };
 
@@ -287,6 +281,107 @@ function expectLevel(level, expected, name) {
     const r = await PG.scanContent('Just a normal question about sorting algorithms');
     assert.strictEqual(r.confidence, 0, 'no matches');
     assert.strictEqual(aiRequestCount, 0, 'no AI request dispatched');
+  });
+
+  // ---------- 4b. Layer 0 context patterns (log signatures, no fingerprint) ----------
+  await test('Java stack trace → 0.55, AI adjudicates → soft when Nano says SENSITIVE', async () => {
+    aiRespondWith = 'SENSITIVE';
+    const r = await PG.scanContent(
+      'Getting this error when processing:\n' +
+      'at com.fakebank.wealth.PortfolioService.reconcile(PortfolioService.java:142)\n' +
+      'at com.fakebank.wealth.PortfolioService.run(JobRunner.java:88)  — any ideas?'
+    );
+    assert.strictEqual(r.contextCount, 2, 'two stack frames matched');
+    assert.ok(r.matches.some((m) => m.key === 'java_stacktrace'), 'java_stacktrace match');
+    assert.strictEqual(r.regexScore, 0.55, 'regex score from context only');
+    assert.strictEqual(r.aiUsed, true, 'log signature triggered AI');
+    assert.strictEqual(r.confidence, 0.63, '0.55*0.6 + 0.75*0.4 = 0.63');
+    expectLevel(r.level, 'soft', 'level');
+  });
+
+  await test('Stack trace + Nano SAFE → 0.37 silent (no false alarm)', async () => {
+    aiRespondWith = 'SAFE';
+    const r = await PG.scanContent(
+      'Debugging my homework:\n' +
+      'at com.example.demo.HelloWorld.main(HelloWorld.java:12)\n' +
+      'Can someone explain the stack trace?'
+    );
+    assert.strictEqual(r.aiUsed, true, 'AI ran');
+    assert.strictEqual(r.confidence, 0.37, '0.55*0.6 + 0.1*0.4 = 0.37');
+    expectLevel(r.level, 'silent', 'level');
+  });
+
+  await test('Timestamped ERROR log line → 0.50, AI unavailable → falls back', async () => {
+    aiRespondWith = 'unavailable';
+    const r = await PG.scanContent(
+      '2026-08-18 09:14:22,731 ERROR PaymentProcessor Failed to settle batch 88213'
+    );
+    assert.ok(r.matches.some((m) => m.key === 'log_error_line'), 'log_error_line match');
+    assert.strictEqual(r.confidence, 0.5, 'falls back to regex score');
+    expectLevel(r.level, 'soft', 'level');
+  });
+
+  await test('Internal hostname (.corp) → 0.75 modal without any fingerprint', async () => {
+    const r = await PG.scanContent('The deployment hit https://api.corpbank-internal.corp/v2/settle and timed out');
+    assert.ok(r.matches.some((m) => m.key === 'internal_url'), 'internal_url match');
+    assert.strictEqual(r.confidence, 0.75, '0.75 from context pattern');
+    expectLevel(r.level, 'modal', 'level');
+  });
+
+  await test('Customer identifier in a ticket excerpt → 0.50 fuzzy zone, AI consulted', async () => {
+    aiRespondWith = 'POSSIBLY_SENSITIVE';
+    aiRequestCount = 0;
+    const r = await PG.scanContent(
+      'Support ticket: customer_id: 4829103 reported a failed payout, account number in the notes'
+    );
+    assert.ok(r.matches.some((m) => m.key === 'customer_identifier'), 'customer_identifier match');
+    assert.strictEqual(r.aiUsed, true, 'AI consulted');
+    assert.ok(aiRequestCount >= 1, 'AI request dispatched');
+  });
+
+  // ---------- 4c. AI gating ----------
+  await test('ai_enabled=false → AI never runs, regex-only result', async () => {
+    aiEnabled = false;
+    aiRequestCount = 0;
+    aiRespondWith = 'SENSITIVE';
+    // Distinct text: the 2s scan cache would otherwise reuse an earlier result.
+    const r = await PG.scanContent('The nostro ledger for the portfolio should sync');
+    assert.strictEqual(r.aiUsed, false, 'aiUsed false');
+    assert.strictEqual(aiRequestCount, 0, 'no AI request');
+    assert.strictEqual(r.confidence, 0.45, 'pure regex score');
+    aiEnabled = true;
+  });
+
+  await test('org feature_flags.ai=off forces AI off even when enabled', async () => {
+    // isAIEnabled reads feature_flags from storage; flip via a scoped override
+    // by temporarily changing the stub return.
+    const origGet = global.chrome.storage.local.get;
+    global.chrome.storage.local.get = async () => ({
+      projects: testProjects,
+      ai_enabled: true,
+      feature_flags: { ai: 'off' }
+    });
+    aiRequestCount = 0;
+    const r = await PG.scanContent('The nostro ledger needs the portfolio view');
+    assert.strictEqual(r.aiUsed, false, 'AI forced off');
+    assert.strictEqual(aiRequestCount, 0, 'no AI request');
+    global.chrome.storage.local.get = origGet;
+  });
+
+  await test('org feature_flags.ai=on forces AI on even when disabled', async () => {
+    const origGet = global.chrome.storage.local.get;
+    global.chrome.storage.local.get = async () => ({
+      projects: testProjects,
+      ai_enabled: false,
+      feature_flags: { ai: 'on' }
+    });
+    aiRespondWith = 'SAFE';
+    aiRequestCount = 0;
+    const r = await PG.scanContent('Check the nostro ledger before updating the portfolio');
+    assert.strictEqual(r.aiUsed, true, 'AI forced on');
+    assert.ok(aiRequestCount >= 1, 'AI request dispatched');
+    global.chrome.storage.local.get = origGet;
+    aiRespondWith = 'unavailable';
   });
 
   // ---------- 5. Project loading ----------

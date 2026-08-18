@@ -147,6 +147,136 @@ async function disconnect() {
 }
 
 // ------------------------------------------------------------------
+// v2: on-device AI (Gemini Nano) — enable / disable with download progress
+// ------------------------------------------------------------------
+let aiAvailability = 'unavailable';
+
+function setAIStatus(text, isError) {
+  const el = $('aiStatus');
+  el.textContent = text;
+  el.className = 'pg-ai-status' + (isError ? ' error' : '');
+}
+
+function updateAIProgress(ratio) {
+  const pct = Math.max(0, Math.min(100, Math.round((ratio || 0) * 100)));
+  $('aiProgressBar').style.width = pct + '%';
+  $('aiProgressLabel').textContent =
+    pct < 100
+      ? 'Downloading Gemini Nano — ' + pct + '% (one-time, Chrome-managed)'
+      : 'Download complete — finishing up…';
+}
+
+async function loadAIState() {
+  let enabled = false;
+  let flags = {};
+  try {
+    const state = await chrome.storage.local.get(['ai_enabled', 'feature_flags']);
+    enabled = state.ai_enabled === true;
+    flags = state.feature_flags && typeof state.feature_flags === 'object' ? state.feature_flags : {};
+  } catch (err) {
+    /* ignore */
+  }
+
+  // Org admin can force on/off via the organisation's feature flags.
+  if (flags.ai === 'off') {
+    $('aiEnableBtn').hidden = true;
+    $('aiDisableBtn').hidden = true;
+    setAIStatus('Disabled by your org admin (feature flag)', true);
+    return;
+  }
+  if (flags.ai === 'on') {
+    enabled = true;
+  }
+
+  // Availability check runs in the popup document (an extension page, where
+  // the Prompt API exists) — the same context that will host the download.
+  if (PG.ai) {
+    try {
+      aiAvailability = await PG.ai.checkAvailability();
+    } catch (err) {
+      aiAvailability = 'unavailable';
+    }
+  } else {
+    aiAvailability = 'unavailable';
+  }
+  renderAIUi(enabled);
+}
+
+function renderAIUi(enabled) {
+  $('aiEnableBtn').hidden = enabled;
+  $('aiDisableBtn').hidden = !enabled;
+  if (enabled) {
+    setAIStatus('Active — Gemini Nano adjudicates ambiguous prompts, fully on-device');
+    return;
+  }
+  if (aiAvailability === 'available') {
+    setAIStatus('Gemini Nano is downloaded — ready to enable.');
+  } else if (aiAvailability === 'downloading' || aiAvailability === 'downloadable') {
+    setAIStatus('Available to download (~1–2 GB, one-time, managed by Chrome).');
+  } else {
+    setAIStatus(
+      'Not available on this device. Needs Chrome 138+ on Windows 10/11, macOS 13+, Linux or Chromebook Plus, with 16 GB+ RAM (or 4 GB+ VRAM) and 22 GB free storage.',
+      true
+    );
+  }
+}
+
+async function enableAI() {
+  if (!PG.ai) {
+    setAIStatus('AI engine failed to load — reload the extension', true);
+    return;
+  }
+  const btn = $('aiEnableBtn');
+  btn.disabled = true;
+  $('aiProgressWrap').hidden = false;
+  updateAIProgress(0);
+  setAIStatus('Preparing Gemini Nano…');
+  try {
+    // create() runs synchronously inside this click handler — the fresh user
+    // activation the Prompt API requires for the first (download) session.
+    // The monitor callback reports download progress; when the model is
+    // already downloaded, create() resolves immediately.
+    const session = await PG.ai.createSession({
+      monitor(m) {
+        m.addEventListener('downloadprogress', (e) => {
+          // Per the docs e.loaded is a 0..1 ratio; guard for total-based too.
+          const ratio = e.total ? e.loaded / e.total : e.loaded;
+          updateAIProgress(ratio);
+        });
+      }
+    });
+    if (!session) throw new Error('session create failed');
+    try {
+      if (session.destroy) session.destroy();
+    } catch (err) {
+      /* ignore */
+    }
+    await chrome.storage.local.set({ ai_enabled: true });
+    $('aiProgressWrap').hidden = true;
+    aiAvailability = 'available';
+    renderAIUi(true);
+    setAIStatus('Enabled — Gemini Nano is now active on AI platforms');
+  } catch (err) {
+    $('aiProgressWrap').hidden = true;
+    aiAvailability = await PG.ai.checkAvailability().catch(() => 'unavailable');
+    renderAIUi(false);
+    setAIStatus('Could not start the download: ' + String((err && err.message) || err), true);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function disableAI() {
+  try {
+    await chrome.storage.local.set({ ai_enabled: false });
+  } catch (err) {
+    /* ignore */
+  }
+  renderAIUi(false);
+  setAIStatus('Disabled — regex + fingerprint detection still active');
+}
+
+// ------------------------------------------------------------------
 // Token helpers
 // ------------------------------------------------------------------
 
@@ -413,10 +543,13 @@ async function clearLogs() {
 document.addEventListener('DOMContentLoaded', () => {
   loadStateIntoForm();
   loadOrgState();
+  loadAIState();
   $('saveBtn').addEventListener('click', saveAndFetchProjects);
   $('testBtn').addEventListener('click', testConnection);
   $('clearLogsBtn').addEventListener('click', clearLogs);
   $('joinBtn').addEventListener('click', joinOrg);
   $('syncNowBtn').addEventListener('click', syncNow);
   $('disconnectBtn').addEventListener('click', disconnect);
+  $('aiEnableBtn').addEventListener('click', enableAI);
+  $('aiDisableBtn').addEventListener('click', disableAI);
 });

@@ -14,9 +14,10 @@
  *   1. Wraps window.fetch and XMLHttpRequest in the MAIN world.
  *   2. Bridges scan requests to the isolated-world scanner engine via
  *      CustomEvents ("promptguard:scan" / "promptguard:decision").
- *   3. Also bridges the Chrome Built-in AI (Gemini Nano) call
- *      ("promptguard:ai-request" / "promptguard:ai-response"), because
- *      window.ai is only guaranteed to exist in the page world.
+ *
+ * Gemini Nano classification does NOT run here (the old window.ai API is
+ * deprecated and not available in page worlds) — it runs in the extension's
+ * offscreen document via the background service worker (ai-engine.js).
  *
  * Technical rules honoured (brief "critical fixes"):
  *   - Only string bodies are scanned. ReadableStream / FormData bodies are
@@ -33,9 +34,6 @@
   const SCAN_EVENT = 'promptguard:scan';
   const DECISION_EVENT = 'promptguard:decision';
   const READY_EVENT = 'promptguard:ready';
-  const AI_REQUEST_EVENT = 'promptguard:ai-request';
-  const AI_RESPONSE_EVENT = 'promptguard:ai-response';
-  const AI_TIMEOUT_MS = 2500;      // 2.5s cap on session.prompt()
   const NOT_READY_TIMEOUT_MS = 1500;
 
   let ready = false;
@@ -252,86 +250,9 @@
     }
   }
 
-  // ------------------------------------------------------------------
-  // Chrome Built-in AI (Gemini Nano) — executed in the MAIN world
-  // ------------------------------------------------------------------
-  window.addEventListener(AI_REQUEST_EVENT, async (e) => {
-    const d = (e && e.detail) || {};
-    const respond = (detail) => {
-      try {
-        window.dispatchEvent(
-          new CustomEvent(AI_RESPONSE_EVENT, {
-            detail: Object.assign({ requestId: d.requestId }, detail)
-          })
-        );
-      } catch (err) {
-        /* ignore */
-      }
-    };
-    try {
-      const label = await classifyWithBuiltInAI(d.text || '', d.systemPrompt || '');
-      if (label) respond({ ok: true, label });
-      else respond({ ok: false, error: 'ai-unavailable' });
-    } catch (err) {
-      respond({ ok: false, error: String((err && err.message) || err) });
-    }
-  }, true);
-
-  /**
-   * Runs the classification with the strict system prompt and a 2.5s
-   * Promise.race timeout. Returns the raw label ("SENSITIVE" |
-   * "POSSIBLY_SENSITIVE" | "SAFE") or null when the AI is unavailable or
-   * times out. Never throws to the caller.
-   */
-  async function classifyWithBuiltInAI(text, systemPrompt) {
-    // Graceful availability check (brief, fix B).
-    if (typeof window.ai === 'undefined' || !window.ai.languageModel) return null;
-    let caps = null;
-    try {
-      caps = await window.ai.languageModel.capabilities();
-    } catch (err) {
-      caps = window.ai.languageModel.capabilities || null;
-    }
-    if (!caps || caps.available === 'no' || caps.available === undefined) return null;
-
-    const session = await window.ai.languageModel.create({
-      systemPrompt: systemPrompt || undefined
-    });
-    try {
-      const prompt =
-        'Classify this text. Reply ONLY with JSON: {"label": "SENSITIVE|POSSIBLE|SAFE", "reason": "short reason"}\n\nText:\n' +
-        String(text).slice(0, 4000);
-      const raw = await Promise.race([
-        Promise.resolve(session.prompt(prompt)),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('ai-timeout')), AI_TIMEOUT_MS))
-      ]);
-      return parseLabel(raw);
-    } finally {
-      try {
-        if (session.destroy) session.destroy();
-      } catch (err) {
-        /* ignore */
-      }
-    }
-  }
-
-  function parseLabel(raw) {
-    if (!raw) return null;
-    let s = String(raw).trim();
-    const fence = s.match(/```(?:json)?\s*([\s\S]*?)```/i);
-    if (fence) s = fence[1].trim();
-    const brace = s.indexOf('{');
-    const endBrace = s.lastIndexOf('}');
-    if (brace !== -1 && endBrace > brace) {
-      try {
-        const parsed = JSON.parse(s.slice(brace, endBrace + 1));
-        if (parsed && parsed.label) return String(parsed.label).toUpperCase();
-      } catch (err) {
-        /* fall through to regex extraction */
-      }
-    }
-    const m = s.match(/"label"\s*:\s*"([^"]+)"/i);
-    if (m) return m[1].toUpperCase();
-    return null;
-  }
+  // NOTE: Gemini Nano classification no longer runs here. The old
+  // window.ai.languageModel API is deprecated; the modern global LanguageModel
+  // is not available in MAIN-world web pages, so all inference now happens in
+  // the extension's offscreen document (see ai-engine.js / offscreen.js),
+  // reached from the isolated world via the background service worker.
 })();

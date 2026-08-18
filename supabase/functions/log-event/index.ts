@@ -46,6 +46,15 @@ Deno.serve(async (req) => {
   const platform = String(body.platform || "unknown").slice(0, 60);
   const projectId = body.project_id ? String(body.project_id) : null;
 
+  // AI adjudication fields (dual-engine audit trail). Allowlisted labels
+  // only; anything else is stored as null so the dashboard stays clean.
+  const aiUsed = body.ai_used === true ? true : body.ai_used === false ? false : null;
+  const aiLabel = ["SENSITIVE", "POSSIBLY_SENSITIVE", "POSSIBLE", "SAFE"].includes(String(body.ai_label || ""))
+    ? String(body.ai_label).toUpperCase()
+    : null;
+  const aiModel = String(body.ai_model || "").slice(0, 40) || null;
+  const regexScore = Number(body.regex_score);
+
   const supabase = client();
   const { data, error } = await supabase
     .from("events")
@@ -60,6 +69,10 @@ Deno.serve(async (req) => {
       platform,
       device_id: device.id,
       device_name: device.device_name,
+      ai_used: aiUsed,
+      ai_label: aiLabel,
+      ai_model: aiModel,
+      regex_score: Number.isFinite(regexScore) && regexScore >= 0 && regexScore <= 1 ? regexScore : null,
       timestamp: body.timestamp ? String(body.timestamp) : new Date().toISOString(),
     })
     .select("id")

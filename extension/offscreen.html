@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>PromptGuard — On-device AI host</title>
+</head>
+<body>
+  <!--
+    Offscreen document: the only document context guaranteed to host the
+    Prompt API (global LanguageModel) for the extension. The Prompt API is
+    not available in service workers / Web Workers, and not on arbitrary web
+    pages, so all Gemini Nano inference for content scripts runs here.
+    chrome.runtime is the ONLY extensions API available in this document.
+  -->
+  <script src="ai-engine.js"></script>
+  <script src="offscreen.js"></script>
+</body>
+</html>

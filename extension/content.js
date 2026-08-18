@@ -55,6 +55,19 @@
   // ------------------------------------------------------------------
   // Audit logging
   // ------------------------------------------------------------------
+  // Maps a pattern key to the bucket stored in the Supabase events table.
+  // The log-event edge function allowlists: package_name, class_name, secret,
+  // internal_url, internal_ip, vocabulary, rules, ai_context, log_signature.
+  let auditTypeByKey = null;
+  function getAuditTypeByKey() {
+    if (auditTypeByKey) return auditTypeByKey;
+    const map = {};
+    for (const p of PG.SECRET_PATTERNS || []) map[p.key] = p.auditType || 'secret';
+    for (const p of PG.CONTEXT_PATTERNS || []) map[p.key] = p.auditType || 'log_signature';
+    auditTypeByKey = map;
+    return map;
+  }
+
   async function logEvent(eventType, result, url) {
     // Always use the latest identity from storage — never a stale value from
     // before the popup was connected.
@@ -70,6 +83,16 @@
       }
     }
     const top = result.matches && result.matches.length ? result.matches[0] : null;
+    // Bucket the top match into the events-table allowlist ('secret' for AWS
+    // keys etc., 'log_signature' for stack traces, ...). When the AI alone
+    // flagged the text with no deterministic match, record 'ai_context'.
+    const bucketMap = getAuditTypeByKey();
+    const matchType =
+      top && top.key
+        ? bucketMap[top.key] || top.key
+        : result.aiUsed
+          ? 'ai_context'
+          : 'none';
     const event = {
       timestamp: new Date().toISOString(),
       org_id: orgIdentity.org_id,
@@ -79,7 +102,8 @@
       regex_score: result.regexScore,
       ai_used: result.aiUsed,
       ai_label: result.aiLabel || null,
-      match_type: top ? top.key : 'none',
+      ai_model: result.aiUsed ? result.aiModel || 'gemini-nano' : null,
+      match_type: matchType,
       match_label: top ? top.label : 'none',
       match_preview: top ? String(top.matchedText).slice(0, 30) : '',
       monitor_only: result.monitor_only === true ? true : null,

@@ -1,14 +1,25 @@
 /**
  * patterns.js — PromptGuard
  *
- * Hardcoded secret / credential regex patterns. These are scanned on EVERY
- * intercepted request, regardless of which project fingerprints are loaded.
+ * Two always-on detection layers, both independent of any scanned fingerprint:
+ *
+ * 1. SECRET_PATTERNS — hardcoded credentials / PII. Scanned on EVERY
+ *    intercepted request. A match is near-conclusive (confidence 0.99).
+ *
+ * 2. CONTEXT_PATTERNS (Layer 0) — log signatures + sensitive-context markers.
+ *    These catch the "support engineer" surface: pasted stack traces, log
+ *    excerpts, internal hostnames, customer identifiers. A single log line is
+ *    NOT conclusive on its own (developers legitimately paste stack traces),
+ *    so these contribute a modest score (0.50–0.75) and, importantly, push the
+ *    text into the Gemini Nano adjudication zone.
  *
  * Each entry:
  *   key        — machine id used as match_type in the audit log
  *   label      — human readable name shown in the warning modal
  *   severity   — critical | high | medium
  *   confidence — score contributed when this pattern matches
+ *   auditType  — bucket stored in the Supabase events.match_type column
+ *                (must stay within the log-event edge function allowlist)
  *   regex      — global regex used to find every occurrence
  */
 (function () {
@@ -22,6 +33,7 @@
       label: 'AWS Access Key',
       severity: 'critical',
       confidence: 0.99,
+      auditType: 'secret',
       regex: /\bAKIA[0-9A-Z]{16}\b/g
     },
     {
@@ -29,6 +41,7 @@
       label: 'AWS Secret Key',
       severity: 'critical',
       confidence: 0.99,
+      auditType: 'secret',
       regex: /aws.{0,20}secret.{0,20}['"][0-9a-zA-Z/+]{40}['"]/gi
     },
     {
@@ -36,6 +49,7 @@
       label: 'GitHub Personal Access Token',
       severity: 'critical',
       confidence: 0.99,
+      auditType: 'secret',
       regex: /\bghp_[a-zA-Z0-9]{36}\b/g
     },
     {
@@ -43,6 +57,7 @@
       label: 'GitHub OAuth Token',
       severity: 'critical',
       confidence: 0.99,
+      auditType: 'secret',
       regex: /\bgho_[a-zA-Z0-9]{36}\b/g
     },
     {
@@ -50,6 +65,7 @@
       label: 'GitLab Personal Access Token',
       severity: 'critical',
       confidence: 0.99,
+      auditType: 'secret',
       regex: /\bglpat-[a-zA-Z0-9\-]{20}\b/g
     },
     {
@@ -57,6 +73,7 @@
       label: 'Stripe Secret Key',
       severity: 'critical',
       confidence: 0.99,
+      auditType: 'secret',
       regex: /\bsk_live_[a-zA-Z0-9]{24,}\b/g
     },
     {
@@ -64,6 +81,7 @@
       label: 'Stripe Publishable Key',
       severity: 'high',
       confidence: 0.99,
+      auditType: 'secret',
       regex: /\bpk_live_[a-zA-Z0-9]{24,}\b/g
     },
     {
@@ -71,6 +89,7 @@
       label: 'Twilio Account SID',
       severity: 'high',
       confidence: 0.99,
+      auditType: 'secret',
       regex: /\bAC[a-f0-9]{32}\b/g
     },
     {
@@ -78,6 +97,7 @@
       label: 'SendGrid API Key',
       severity: 'critical',
       confidence: 0.99,
+      auditType: 'secret',
       regex: /\bSG\.[a-zA-Z0-9\-_]{22}\.[a-zA-Z0-9\-_]{43}\b/g
     },
     {
@@ -85,6 +105,7 @@
       label: 'Brevo SMTP Key',
       severity: 'critical',
       confidence: 0.99,
+      auditType: 'secret',
       regex: /\bxsmtpsib-[a-f0-9]{64}-[a-zA-Z0-9]{16}\b/g
     },
     {
@@ -92,6 +113,7 @@
       label: 'Database Connection String',
       severity: 'critical',
       confidence: 0.99,
+      auditType: 'secret',
       regex: /(?:mongodb|postgresql|postgres|mysql|redis|mssql|sqlserver):\/\/[^\s]{10,}/g
     },
     {
@@ -99,6 +121,7 @@
       label: 'Private Key (PEM/PGP/SSH)',
       severity: 'critical',
       confidence: 0.99,
+      auditType: 'secret',
       regex: /-----BEGIN (?:RSA |EC |PGP |OPENSSH )?PRIVATE KEY(?: BLOCK)?-----/g
     },
     {
@@ -106,6 +129,7 @@
       label: 'JWT Token',
       severity: 'high',
       confidence: 0.99,
+      auditType: 'secret',
       regex: /eyJ[A-Za-z0-9-_=]+\.[A-Za-z0-9-_=]+\./g
     },
     {
@@ -113,6 +137,7 @@
       label: 'Aadhaar Number',
       severity: 'high',
       confidence: 0.99,
+      auditType: 'secret',
       regex: /\b[2-9]{1}[0-9]{3}\s?[0-9]{4}\s?[0-9]{4}\b/g,
       // Real Aadhaar numbers end in a Verhoeff checksum digit; this kills
       // false positives from random 12-digit IDs in telemetry payloads.
@@ -123,6 +148,7 @@
       label: 'PAN Number',
       severity: 'medium',
       confidence: 0.99,
+      auditType: 'secret',
       regex: /\b[A-Z]{5}[0-9]{4}[A-Z]{1}\b/g
     },
     {
@@ -130,6 +156,7 @@
       label: 'Hardcoded Password',
       severity: 'high',
       confidence: 0.99,
+      auditType: 'secret',
       regex: /(?:password|passwd|pwd|secret|api_key|apikey|auth_token)\s*[=:]\s*['"][^'"]{8,}['"]/gi,
       // Skip low-entropy values like password="demo" that are clearly not
       // real credentials (same gate as the Python scanner).
@@ -144,6 +171,7 @@
       label: 'Internal IP Address',
       severity: 'medium',
       confidence: 0.7,
+      auditType: 'internal_ip',
       regex: /\b(10\.|172\.1[6-9]\.|192\.168\.)\d+\.\d+\b/g
     },
     // --- Additional high-precision patterns (production hardening) ---
@@ -152,6 +180,7 @@
       label: 'Anthropic API Key',
       severity: 'critical',
       confidence: 0.99,
+      auditType: 'secret',
       regex: /\bsk-ant-[a-zA-Z0-9_-]{20,}\b/g
     },
     {
@@ -159,6 +188,7 @@
       label: 'OpenAI API Key',
       severity: 'critical',
       confidence: 0.99,
+      auditType: 'secret',
       regex: /\bsk-(?:proj|svcacct)-[a-zA-Z0-9_-]{20,}\b/g
     },
     {
@@ -166,6 +196,7 @@
       label: 'Slack Token',
       severity: 'high',
       confidence: 0.99,
+      auditType: 'secret',
       regex: /\bxox[baprs]-[a-zA-Z0-9-]{10,}\b/g
     },
     {
@@ -173,7 +204,64 @@
       label: 'Google API Key',
       severity: 'high',
       confidence: 0.99,
+      auditType: 'secret',
       regex: /\bAIza[0-9A-Za-z_-]{35}\b/g
+    }
+  ];
+
+  /**
+   * Layer 0 — always-on context patterns (no fingerprint needed).
+   *
+   * These catch the leak surface that repo scanning cannot: pasted logs,
+   * stack traces, ticket excerpts, internal hostnames, customer identifiers.
+   * Confidence values are deliberately modest — presence of a stack trace must
+   * NOT hard-block (developers legitimately paste them to ask for help). The
+   * score elevates the text into the Nano adjudication zone and contributes a
+   * soft-warning signal when Nano agrees it is sensitive.
+   */
+  const CONTEXT_PATTERNS = [
+    {
+      key: 'java_stacktrace',
+      label: 'Java/Kotlin stack trace',
+      severity: 'medium',
+      confidence: 0.55,
+      auditType: 'log_signature',
+      // A frame is `at pkg.Class.method(File.java:123)`. The file:line suffix
+      // is what makes it a stack trace rather than a generic method call, so
+      // the dotted path is loose but the tail is strict.
+      regex: /\bat [a-zA-Z_$][\w$]*(?:\.[a-zA-Z_$][\w$]*)+\.[a-zA-Z_$][\w$]*\([^)]*\.(?:java|kt|scala|groovy):\d+\)/g
+    },
+    {
+      key: 'python_traceback',
+      label: 'Python traceback',
+      severity: 'medium',
+      confidence: 0.55,
+      auditType: 'log_signature',
+      regex: /(?:Traceback \(most recent call last\):|File "[^"]+", line \d+, in [\w<>.]+)/g
+    },
+    {
+      key: 'log_error_line',
+      label: 'Timestamped log line with severity',
+      severity: 'medium',
+      confidence: 0.5,
+      auditType: 'log_signature',
+      regex: /(?:^|\n)\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}[.,]\d{1,6}\s+(?:ERROR|SEVERE|FATAL|WARN|WARNING|CRITICAL)\b/g
+    },
+    {
+      key: 'internal_url',
+      label: 'Internal hostname / URL',
+      severity: 'high',
+      confidence: 0.75,
+      auditType: 'internal_url',
+      regex: /https?:\/\/[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)*\.(?:internal|corp|local|intranet|lan)(?::\d+)?(?:[\/?#][^\s"'<>]*)?/gi
+    },
+    {
+      key: 'customer_identifier',
+      label: 'Customer / account identifier',
+      severity: 'medium',
+      confidence: 0.5,
+      auditType: 'log_signature',
+      regex: /(?:client|customer|account|transaction|order|invoice|patient)[_\s-]?(?:id|no|number|num|code)\s*[:=]\s*['"]?[A-Z0-9][A-Z0-9_-]{5,}['"]?/gi
     }
   ];
 
@@ -194,16 +282,27 @@
   /**
    * Find every occurrence of every secret pattern in `text`.
    * Returns an array of normalized match objects:
-   *   { key, label, severity, confidence, matchedText, start, end, projectId, projectName }
+   *   { key, label, severity, confidence, auditType, matchedText, start, end, projectId, projectName }
    */
   function scanSecrets(text) {
+    return runPatterns(SECRET_PATTERNS, text, 'Global security patterns');
+  }
+
+  /**
+   * Find every Layer-0 context match (log signatures, internal URLs,
+   * customer identifiers) in `text`.
+   */
+  function scanContext(text) {
+    return runPatterns(CONTEXT_PATTERNS, text, 'Global context patterns');
+  }
+
+  function runPatterns(patterns, text, projectName) {
     const found = [];
-    for (const p of SECRET_PATTERNS) {
+    for (const p of patterns) {
       p.regex.lastIndex = 0;
       let m;
       while ((m = p.regex.exec(text)) !== null) {
-        // Skip matches that fail a pattern-level validator (e.g. the Verhoeff
-        // checksum on Aadhaar numbers).
+        // Skip matches that fail a pattern-level validator.
         if (p.validate && !p.validate(m[0])) {
           if (m[0].length === 0) p.regex.lastIndex += 1;
           continue;
@@ -213,11 +312,12 @@
           label: p.label,
           severity: p.severity,
           confidence: p.confidence,
-          matchedText: m[0],
+          auditType: p.auditType || 'other',
+          matchedText: m[0].length > 120 ? m[0].slice(0, 120) : m[0],
           start: m.index,
           end: m.index + m[0].length,
           projectId: null,
-          projectName: 'Global security patterns'
+          projectName: projectName
         });
         if (m[0].length === 0) {
           p.regex.lastIndex += 1;
@@ -265,5 +365,7 @@
   }
 
   PG.SECRET_PATTERNS = SECRET_PATTERNS;
+  PG.CONTEXT_PATTERNS = CONTEXT_PATTERNS;
   PG.scanSecrets = scanSecrets;
+  PG.scanContext = scanContext;
 })();

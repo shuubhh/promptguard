@@ -231,6 +231,81 @@ chrome.runtime.onStartup.addListener(async () => {
 });
 
 // ------------------------------------------------------------------
+// v2: on-device AI (Gemini Nano) — offscreen document routing
+// ------------------------------------------------------------------
+// The Prompt API (global LanguageModel) is NOT available in service workers,
+// Web Workers, or arbitrary web pages. All inference therefore runs in an
+// OFFSCREEN DOCUMENT (offscreen.html), which hosts the model and answers
+// chrome.runtime messages. This section owns that document's lifecycle:
+// create lazily, reuse, and recreate if the worker is restarted while it is
+// gone. `WORKERS` is the closest reason enum and imposes no lifetime limit.
+const OFFSCREEN_URL = 'offscreen.html';
+
+async function ensureOffscreenDocument() {
+  try {
+    if (typeof chrome.offscreen === 'undefined') return false;
+    if (typeof chrome.runtime.getContexts === 'function') {
+      const contexts = await chrome.runtime.getContexts({
+        contextTypes: ['OFFSCREEN_DOCUMENT'],
+        documentUrls: [chrome.runtime.getURL(OFFSCREEN_URL)]
+      });
+      if (contexts && contexts.length > 0) return true;
+    } else if (typeof chrome.offscreen.hasDocument === 'function') {
+      if (await chrome.offscreen.hasDocument()) return true;
+    }
+    await chrome.offscreen.createDocument({
+      url: OFFSCREEN_URL,
+      reasons: ['WORKERS'],
+      justification: 'Run Gemini Nano (Prompt API) classification for on-device DLP scanning'
+    });
+    return true;
+  } catch (err) {
+    console.warn('[PromptGuard] offscreen document unavailable', err);
+    return false;
+  }
+}
+
+async function aiInfer(text) {
+  if (!(await ensureOffscreenDocument())) return { ok: false, error: 'ai-unavailable' };
+  const ask = async () => {
+    const res = await chrome.runtime.sendMessage({
+      type: 'PG_AI_INFER',
+      text: String(text || '')
+    });
+    return res && typeof res === 'object' ? res : { ok: false, error: 'ai-unavailable' };
+  };
+  try {
+    return await ask();
+  } catch (err) {
+    // The offscreen document may have been closed while the worker slept.
+    // Recreate it and retry exactly once before giving up.
+    try {
+      if (typeof chrome.offscreen.closeDocument === 'function') {
+        await chrome.offscreen.closeDocument();
+      }
+    } catch (e) {
+      /* ignore */
+    }
+    if (!(await ensureOffscreenDocument())) return { ok: false, error: 'ai-unavailable' };
+    try {
+      return await ask();
+    } catch (err2) {
+      return { ok: false, error: 'ai-unavailable' };
+    }
+  }
+}
+
+async function aiAvailability() {
+  if (!(await ensureOffscreenDocument())) return 'unavailable';
+  try {
+    const res = await chrome.runtime.sendMessage({ type: 'PG_AI_AVAILABILITY' });
+    return res && res.availability ? res.availability : 'unavailable';
+  } catch (err) {
+    return 'unavailable';
+  }
+}
+
+// ------------------------------------------------------------------
 // Message handling
 // ------------------------------------------------------------------
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
@@ -292,6 +367,22 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     getDevice()
       .then((d) => sendResponse({ device: d }))
       .catch(() => sendResponse({ device: null }));
+    return true;
+  }
+
+  // On-device AI (Gemini Nano) routing — content scripts cannot host the
+  // Prompt API, so these hop through the background to the offscreen doc.
+  if (msg.type === 'PG_AI_REQUEST') {
+    aiInfer(msg.text)
+      .then((r) => sendResponse(r))
+      .catch((err) => sendResponse({ ok: false, error: String((err && err.message) || err) }));
+    return true;
+  }
+
+  if (msg.type === 'PG_AI_AVAILABILITY') {
+    aiAvailability()
+      .then((availability) => sendResponse({ availability: availability }))
+      .catch(() => sendResponse({ availability: 'unavailable' }));
     return true;
   }
 
@@ -596,6 +687,10 @@ async function syncEventToBackend(event) {
           platform: event.platform,
           project_id: event.project_id || null,
           monitor_only: event.monitor_only === true ? true : null,
+          ai_used: event.ai_used === true || event.ai_used === false ? event.ai_used : undefined,
+          ai_label: event.ai_label || undefined,
+          ai_model: event.ai_model || undefined,
+          regex_score: event.regex_score,
           timestamp: event.timestamp || new Date().toISOString()
         })
       });
