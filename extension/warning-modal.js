@@ -22,6 +22,49 @@
   // ------------------------------------------------------------------
   // Soft warning (0.50 – 0.70): subtle banner, request still goes through.
   // ------------------------------------------------------------------
+  /**
+   * Human-readable source of the verdict: deterministic pattern engine,
+   * Gemini Nano, or both. The user asked for exactly this distinction.
+   */
+  function detectorSource(result) {
+    const regex = (result && result.regexScore || 0) > 0;
+    const ai = !!(result && result.aiUsed);
+    if (regex && ai) return 'Pattern engine + Gemini Nano';
+    if (ai) return 'Gemini Nano';
+    return 'Pattern engine';
+  }
+
+  /**
+   * Orphaned-context banner: the extension was reloaded/updated while this
+   * tab stayed open. Scanning here is running on a dead bridge — events are
+   * NOT being logged and Nano is NOT being consulted. Self-contained inline
+   * styles (independent of modal.css), one per page, dismissible.
+   */
+  function showOrphanBanner() {
+    if (document.getElementById('pg-orphan-banner')) return;
+    const banner = document.createElement('div');
+    banner.id = 'pg-orphan-banner';
+    banner.style.cssText =
+      'position:fixed;top:0;left:0;right:0;z-index:2147483647;' +
+      'background:#7a1f1f;color:#fff;padding:10px 16px;font:13px/1.4 system-ui,sans-serif;' +
+      'display:flex;align-items:center;gap:12px;box-shadow:0 2px 8px rgba(0,0,0,.4);';
+    const msg = document.createElement('span');
+    msg.style.cssText = 'flex:1;';
+    msg.textContent =
+      'PromptGuard was updated — reload this tab. Until then, prompts here are NOT enforced or logged.';
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.textContent = 'Dismiss';
+    btn.style.cssText =
+      'background:#fff;color:#7a1f1f;border:0;border-radius:4px;padding:4px 12px;cursor:pointer;font:600 12px system-ui,sans-serif;';
+    btn.addEventListener('click', () => {
+      if (banner.parentNode) banner.parentNode.removeChild(banner);
+    });
+    banner.appendChild(msg);
+    banner.appendChild(btn);
+    document.documentElement.appendChild(banner);
+  }
+
   function showSoftWarning(result) {
     if (softBannerEl && document.documentElement.contains(softBannerEl)) return;
 
@@ -41,7 +84,7 @@
       Math.round(result.confidence * 100) +
       '% confidence' +
       projectName +
-      '. Sending anyway.';
+      ' [' + detectorSource(result) + ']. Sending anyway.';
 
     const dismiss = document.createElement('button');
     dismiss.className = 'pg-soft-dismiss';
@@ -120,7 +163,8 @@
           'AI cross-check (' + result.aiLabel + ') — final confidence ' +
           Math.round(result.confidence * 100) + '%';
       } else {
-        aiNote.textContent = 'Final confidence ' + Math.round(result.confidence * 100) + '%';
+        aiNote.textContent =
+          'Pattern engine — final confidence ' + Math.round(result.confidence * 100) + '%';
       }
 
       card.appendChild(shield);
@@ -287,5 +331,7 @@
   }
 
   PG.showSoftWarning = showSoftWarning;
+  PG.showOrphanBanner = showOrphanBanner;
+  PG.detectorSource = detectorSource;
   PG.showWarningModal = showWarningModal;
 })();

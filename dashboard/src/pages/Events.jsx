@@ -161,6 +161,7 @@ export default function Events() {
                   <th className="px-4 py-3">User</th>
                   <th className="px-4 py-3">Platform</th>
                   <th className="px-4 py-3">Match Type</th>
+                  <th className="px-4 py-3">Detector</th>
                   <th className="px-4 py-3">Confidence</th>
                   <th className="px-4 py-3">Action Taken</th>
                   <th className="px-4 py-3" />
@@ -193,6 +194,9 @@ function EventRow({ ev, projectName, expanded, onToggle }) {
         <td className="px-4 py-3">{ev.user_email || '—'}</td>
         <td className="px-4 py-3 capitalize">{ev.platform || '—'}</td>
         <td className="px-4 py-3">{ev.match_label || ev.match_type || '—'}</td>
+        <td className="px-4 py-3">
+          <Badge tone={ev.ai_used ? 'blue' : 'neutral'}>{detectorLabel(ev)}</Badge>
+        </td>
         <td className="px-4 py-3 font-semibold">{Math.round((ev.confidence || 0) * 100)}%</td>
         <td className="px-4 py-3">
           <Badge tone={badgeTone(ev.event_type)}>{ev.event_type}</Badge>
@@ -205,7 +209,7 @@ function EventRow({ ev, projectName, expanded, onToggle }) {
       </tr>
       {expanded ? (
         <tr className="border-b border-line/60 bg-navy/60">
-          <td colSpan={7} className="px-4 py-3">
+          <td colSpan={8} className="px-4 py-3">
             <div className="grid gap-2 text-xs md:grid-cols-2">
               <div>
                 <p className="font-bold text-muted">Project</p>
@@ -242,4 +246,17 @@ function badgeTone(type) {
   if (type === 'blocked') return 'red';
   if (type === 'silent') return 'green';
   return 'amber';
+}
+
+/**
+ * Which detector(s) produced the verdict: the deterministic pattern engine,
+ * Gemini Nano, or both. regex_score > 0 means patterns fired; ai_used means
+ * Nano adjudicated. This is the user-facing regex-vs-Nano distinction.
+ */
+function detectorLabel(ev) {
+  const regex = (ev.regex_score || 0) > 0;
+  if (regex && ev.ai_used) return 'REGEX + NANO';
+  if (ev.ai_used) return 'NANO';
+  if (regex) return 'REGEX';
+  return '—';
 }

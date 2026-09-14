@@ -458,7 +458,10 @@ function isSyncableEvent(event) {
     event &&
     event.event_type &&
     // Monitor-only orgs explicitly want visibility into silent scans too.
-    (event.event_type !== 'silent' || event.monitor_only === true) &&
+    // AI-adjudicated silent scans also sync: they are the proof that Nano
+    // ran (the user-facing regex-vs-Nano distinction), and the AI trigger
+    // zones bound their volume to genuinely ambiguous texts.
+    (event.event_type !== 'silent' || event.monitor_only === true || event.ai_used === true) &&
     event.match_type !== 'connection_test'
   );
 }

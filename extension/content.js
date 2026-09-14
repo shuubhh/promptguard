@@ -38,6 +38,19 @@
   // blocked request is automatically retried by the platform.
   const decisionCache = new Map(); // body -> { ts, decision }
 
+  // Orphaned-context detection: after the extension is reloaded/updated at
+  // chrome://extensions, old tabs keep running injected scripts whose
+  // chrome.* calls silently fail. In-page detection and the modal still work
+  // (pure DOM/JS), but events are lost and Nano is never consulted. Surface
+  // that loudly instead of losing events quietly.
+  function contextIsOrphaned() {
+    try {
+      return typeof chrome === 'undefined' || !chrome.runtime || !chrome.runtime.id;
+    } catch (err) {
+      return true;
+    }
+  }
+
   // ------------------------------------------------------------------
   // Platform detection
   // ------------------------------------------------------------------
@@ -120,7 +133,10 @@
     try {
       chrome.runtime.sendMessage({ type: 'PG_LOG_EVENT', event: event }).catch(() => {});
     } catch (err) {
-      /* background not ready yet — event still counted locally by the badge */
+      // background not reachable — the usual cause is an orphaned context
+      // (extension reloaded while this tab stayed open). Say so loudly;
+      // silent loss is how detection gaps go unnoticed for weeks.
+      if (contextIsOrphaned() && PG.showOrphanBanner) PG.showOrphanBanner();
     }
   }
 
@@ -184,6 +200,15 @@
       } catch (err) {
         // Never break the page: on any scanning error, let the request through.
         console.warn('[PromptGuard] scan error, allowing request', err);
+        if (contextIsOrphaned() && PG.showOrphanBanner) {
+          // The dead context is the likely cause (extension reloaded under an
+          // open tab). Tell the user, and degrade a would-be block to a
+          // visible warning — never silently allow sensitive content.
+          PG.showOrphanBanner();
+          try {
+            PG.showSoftWarning({ confidence: 0.7, topProject: null, matches: [] });
+          } catch (err2) { /* ignore */ }
+        }
         sendDecision('allow');
       }
     })();
