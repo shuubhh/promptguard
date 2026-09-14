@@ -29,6 +29,9 @@ const $ = (id) => document.getElementById(id);
 // ------------------------------------------------------------------
 function reportPopupError(where, err) {
   try {
+    // Machine-readable record (the CDP e2e test asserts on this).
+    window.__pgBootErrors = window.__pgBootErrors || [];
+    window.__pgBootErrors.push(where + ': ' + String((err && err.message) || err));
     const el = document.getElementById('aiStatus');
     if (el) {
       el.textContent = 'Popup ' + where + ': ' + String((err && err.message) || err);
