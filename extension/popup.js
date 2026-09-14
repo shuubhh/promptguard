@@ -507,17 +507,42 @@ function decodeEmailFromJwt(jwt) {
  * and then deletes its probe row so the audit log stays clean.
  */
 async function testConnection() {
-  const supabaseUrl = $('supabaseUrl').value.trim().replace(/\/+$/, '');
-  const anonKey = $('anonKey').value.trim();
+  // Read the FORM fields first (what the user sees), falling back to stored
+  // values. Testing stale storage while fresh values sit in the form made
+  // this button report 'JWT expired' even right after a correct re-paste.
+  const supabaseUrl = ($('supabaseUrl').value.trim() || '').replace(/\/+$/, '') ||
+    (await chrome.storage.local.get('supabase_url')).supabase_url || '';
+  const anonKey = $('anonKey').value.trim() ||
+    (await chrome.storage.local.get('supabase_anon_key')).supabase_anon_key || '';
   if (!supabaseUrl || !anonKey) {
     setStatus('Fill in Supabase URL and anon key first', true);
     return;
+  }
+  // If the form holds credentials that differ from storage, persist them
+  // first so getAccessToken() refreshes against the CURRENT refresh token.
+  const formApiKey = $('apiKey').value.trim();
+  const formRefresh = $('refreshToken').value.trim();
+  if (formApiKey || formRefresh) {
+    const stored = await chrome.storage.local.get(['auth_token', 'auth_refresh_token']);
+    if (stored.auth_token !== formApiKey || stored.auth_refresh_token !== formRefresh) {
+      await chrome.storage.local.set({
+        auth_token: formApiKey,
+        auth_refresh_token: formRefresh
+      });
+    }
   }
   setStatus('Sending test event…', false);
   try {
     const token = await getAccessToken(supabaseUrl, anonKey);
     if (!token) {
       setStatus('No usable API key — click Save & Fetch Projects first', true);
+      return;
+    }
+    if (jwtExpiry(token) && jwtExpiry(token) < Date.now()) {
+      setStatus(
+        'Stored JWT is expired AND the refresh token did not refresh it (re-login on the dashboard invalidates it). Re-copy BOTH from Dashboard → Settings, or ignore — org-joined devices sync events without a JWT.',
+        true
+      );
       return;
     }
     const state = await chrome.storage.local.get(['org_id', 'user_email']);
