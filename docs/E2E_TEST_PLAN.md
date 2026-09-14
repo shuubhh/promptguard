@@ -5,7 +5,12 @@ Gemini Nano → audit trail. Run top to bottom; ~10 minutes.
 
 ## Prep (2 min)
 
-1. `chrome://extensions` → PromptGuard **v0.1.2+**, refreshed; no duplicate cards.
+0. **After ANY extension reload/update at chrome://extensions, refresh every
+   AI-site tab before testing.** An old tab keeps scanning with an orphaned
+   context: the modal still fires but events are lost and Nano is never
+   consulted. v0.1.4+ shows a red "reload this tab" banner when it detects
+   this — don't test past that banner.
+1. `chrome://extensions` → PromptGuard **v0.1.4+**, refreshed; no duplicate cards.
 2. Popup: org joined (org name + email visible), AI section says
    **"Enabled — Gemini Nano is now active on AI platforms"**.
 3. Dashboard open on the **Events** page (so you can watch events land live).
@@ -44,6 +49,20 @@ Repeat B1 on `claude.ai` (and optionally Gemini/DeepSeek) — same behavior.
    (heartbeat < 1 min old).
 2. Events page: events from A/B carry the device name.
 3. Popup counters (Safe/Flagged/Blocked today) incremented.
+
+## Reading the results: which detector fired?
+
+Every verdict now names its source — in the UI (soft banner suffix, modal
+note) and on the dashboard Events page (**Detector** column):
+
+| Detector label | Meaning |
+|---|---|
+| `REGEX` | Deterministic engine only (secrets, fingerprints, Layer-0 context) |
+| `NANO` | Gemini Nano decided; regex score was ~0 (pure AI catch) |
+| `REGEX + NANO` | Regex flagged first, Nano adjudicated the final score |
+
+An event with `NANO` and `AI: SAFE` that synced silently proves Nano ran and
+passed the text — the no-false-alarm proof.
 
 ## Failure signatures (what to report)
 
