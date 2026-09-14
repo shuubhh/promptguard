@@ -19,6 +19,7 @@ const { createRequire } = require('module');
 // Fake LanguageModel (records every call; behavior switched per test)
 // ------------------------------------------------------------------
 let fakeAvailability = 'available'; // 'available' | 'downloading' | 'unavailable'
+let fakeAvailabilityMode = 'normal'; // 'normal' | 'hang' (never settles)
 let fakePromptResponse = '{"label":"SENSITIVE","reason":"contains client package"}';
 let fakePromptMode = 'normal'; // 'normal' | 'hang' | 'reject'
 let fakeCreateThrows = false;
@@ -33,6 +34,7 @@ const calls = {
 };
 
 function resetCalls() {
+  fakeAvailabilityMode = 'normal';
   calls.availability.length = 0;
   calls.params = 0;
   calls.create.length = 0;
@@ -44,6 +46,9 @@ function resetCalls() {
 const fakeLanguageModel = {
   async availability(opts) {
     calls.availability.push(opts);
+    if (fakeAvailabilityMode === 'hang') {
+      return new Promise(() => {}); // never settles — simulates a stuck check
+    }
     return fakeAvailability;
   },
   async params() {
@@ -132,6 +137,26 @@ async function test(name, fn) {
     resetCalls();
     fakeAvailability = 'unavailable';
     assert.strictEqual(await PG.ai.checkAvailability(), 'unavailable');
+  });
+
+  await test('availability() that never settles → "unknown" within the timeout (no hang)', async () => {
+    resetCalls(); // also resets mode to normal; set hang after
+    fakeAvailabilityMode = 'hang';
+    const t0 = Date.now();
+    const r = await PG.ai.checkAvailability({ timeoutMs: 100 });
+    const dt = Date.now() - t0;
+    assert.strictEqual(r, 'unknown', 'bounded result');
+    assert.ok(dt < 2000, 'returned promptly (dt=' + dt + 'ms)');
+  });
+
+  await test('default availability timeout is bounded (≤ ~5s wall clock)', async () => {
+    resetCalls();
+    fakeAvailabilityMode = 'hang';
+    const t0 = Date.now();
+    const r = await PG.ai.checkAvailability();
+    const dt = Date.now() - t0;
+    assert.strictEqual(r, 'unknown');
+    assert.ok(dt < 5500, 'bounded wait (dt=' + dt + 'ms)');
   });
 
   // ---------- 2. Classification ----------

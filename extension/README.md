@@ -114,6 +114,30 @@ VRAM; 22 GB free storage.
 4. Disable anytime with the **Disable** button (regex + fingerprint +
    context detection keep working either way).
 
+### If the download never starts
+
+The Nano model is a Chrome **component**, not a normal download — it never
+appears in the Downloads page and only fetches when an API consumer first
+calls `LanguageModel.create()` (that is exactly what the Enable click does).
+Diagnose in order:
+
+1. **`chrome://on-device-internals`** — *Manifest Criteria* must all be `true`
+   (VRAM / disk / feature flag / enterprise policy / user setting). In
+   *Assets*, the Nano component starts as *Not Installed* — that is normal
+   until first use. In *Use Cases*, `prompt_api` showing *Pending Usage*
+   means Chrome is waiting for the first consumer — click **Enable** in the
+   popup (or tick `prompt_api` under *Requested* there) to trigger it.
+2. **`chrome://components`** — find *Optimization Guide On Device Model* →
+   **Check for update** forces the fetch manually.
+3. **Stale popup** — if the popup was open while the extension was
+   reloaded/updated at `chrome://extensions`, its status line can hang on
+   *Checking availability…* (or the popup says *Extension was reloaded*).
+   Close and reopen the popup; Enable still works either way.
+4. **Managed browser** — an enterprise policy can silently disable on-device
+   AI. Check `chrome://management`.
+5. **Chrome version** — the Prompt API for extensions is stable from
+   Chrome 138 (`chrome://settings/help`).
+
 With AI enabled, test the support-engineer case: paste a stack trace or a
 log excerpt into ChatGPT (e.g. `at com.hdfcbank.wealth.PortfolioService.reconcile(PortfolioService.java:142)`),
 and a log-signature line like `2026-08-18 09:14:22,731 ERROR PaymentProcessor Failed to settle`.

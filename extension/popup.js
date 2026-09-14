@@ -167,6 +167,16 @@ function updateAIProgress(ratio) {
 }
 
 async function loadAIState() {
+  // Orphaned-context guard: if the extension was reloaded/updated while this
+  // popup stayed open, chrome.runtime.id is gone and every chrome.* call
+  // would hang or reject confusingly. Say so instead of spinning forever.
+  if (typeof chrome === 'undefined' || !chrome.runtime || !chrome.runtime.id) {
+    aiAvailability = 'unknown';
+    $('aiEnableBtn').hidden = true;
+    $('aiDisableBtn').hidden = true;
+    setAIStatus('Extension was reloaded — close and reopen this popup.', true);
+    return;
+  }
   let enabled = false;
   let flags = {};
   try {
@@ -192,9 +202,10 @@ async function loadAIState() {
   // the Prompt API exists) — the same context that will host the download.
   if (PG.ai) {
     try {
+      // Bounded inside ai-engine (AVAILABILITY_TIMEOUT_MS) — cannot hang forever.
       aiAvailability = await PG.ai.checkAvailability();
     } catch (err) {
-      aiAvailability = 'unavailable';
+      aiAvailability = 'unknown'; // a throw is ambiguous; Enable still worth trying
     }
   } else {
     aiAvailability = 'unavailable';
@@ -212,16 +223,25 @@ function renderAIUi(enabled) {
   if (aiAvailability === 'available') {
     setAIStatus('Gemini Nano is downloaded — ready to enable.');
   } else if (aiAvailability === 'downloading' || aiAvailability === 'downloadable') {
-    setAIStatus('Available to download (~1–2 GB, one-time, managed by Chrome).');
+    setAIStatus('Available to download (~1–2 GB, one-time, managed by Chrome). Click Enable to start it.');
+  } else if (aiAvailability === 'unknown') {
+    setAIStatus(
+      "Status check didn't complete (stale popup or busy Chrome). You can still click Enable — the model download starts automatically.",
+      true
+    );
   } else {
     setAIStatus(
-      'Not available on this device. Needs Chrome 138+ on Windows 10/11, macOS 13+, Linux or Chromebook Plus, with 16 GB+ RAM (or 4 GB+ VRAM) and 22 GB free storage.',
+      'Not available on this device. Needs Chrome 138+ on Windows 10/11, macOS 13+, Linux or Chromebook Plus, with 16 GB+ RAM (or 4 GB+ VRAM) and 22 GB free storage. Diagnose at chrome://on-device-internals.',
       true
     );
   }
 }
 
 async function enableAI() {
+  if (typeof chrome === 'undefined' || !chrome.runtime || !chrome.runtime.id) {
+    setAIStatus('Extension was reloaded — close and reopen this popup first.', true);
+    return;
+  }
   if (!PG.ai) {
     setAIStatus('AI engine failed to load — reload the extension', true);
     return;
@@ -258,7 +278,7 @@ async function enableAI() {
     setAIStatus('Enabled — Gemini Nano is now active on AI platforms');
   } catch (err) {
     $('aiProgressWrap').hidden = true;
-    aiAvailability = await PG.ai.checkAvailability().catch(() => 'unavailable');
+    aiAvailability = await PG.ai.checkAvailability().catch(() => 'unknown');
     renderAIUi(false);
     setAIStatus('Could not start the download: ' + String((err && err.message) || err), true);
   } finally {

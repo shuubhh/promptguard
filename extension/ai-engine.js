@@ -49,6 +49,11 @@
   // Constants
   // ------------------------------------------------------------------
   const AI_TIMEOUT_MS = 3000; // hard cap on a single session.prompt()
+  // Bound on LanguageModel.availability(): observed to hang indefinitely on
+  // some Chrome builds while the model component is not yet installed. The
+  // popup must never sit on "Checking availability…" forever — after this it
+  // reports 'unknown' and still offers Enable (create() starts the download).
+  const AVAILABILITY_TIMEOUT_MS = 4000;
   // The same modalities/languages must be passed to availability(), create()
   // and (indirectly) prompt() — the docs call this critical.
   const EXPECTED_INPUTS = [{ type: 'text', languages: ['en'] }];
@@ -91,19 +96,37 @@
   // Availability
   // ------------------------------------------------------------------
   /**
-   * Returns 'available' | 'downloading' | 'unavailable'.
+   * Returns 'available' | 'downloading' | 'unavailable' | 'unknown'.
    * Mirrors LanguageModel.availability() with the SAME options used in
    * create() (per the docs, mixing options is unsupported).
+   *
+   * 'unknown' means the check itself could not complete — a hung
+   * availability() (observed on some Chrome builds while the model is not
+   * yet installed) or a stale/orphaned extension context. Callers (popup)
+   * must treat 'unknown' as "Enable is still worth trying": create() is
+   * what actually triggers the model download.
+   * opts.timeoutMs bounds the wait (default AVAILABILITY_TIMEOUT_MS).
    */
-  async function checkAvailability() {
+  async function checkAvailability(opts) {
     const LM = getLanguageModel();
     if (!LM || typeof LM.availability !== 'function') return 'unavailable';
+    const timeoutMs =
+      opts && typeof opts.timeoutMs === 'number' ? opts.timeoutMs : AVAILABILITY_TIMEOUT_MS;
     try {
-      const status = await LM.availability({
-        expectedInputs: EXPECTED_INPUTS,
-        expectedOutputs: EXPECTED_OUTPUTS
+      let timer = null;
+      const timeout = new Promise((resolve) => {
+        timer = setTimeout(() => resolve('unknown'), timeoutMs);
       });
-      return status === 'unavailable' ? 'unavailable' : status;
+      const attempt = (async () => {
+        const status = await LM.availability({
+          expectedInputs: EXPECTED_INPUTS,
+          expectedOutputs: EXPECTED_OUTPUTS
+        });
+        return status === 'unavailable' ? 'unavailable' : status;
+      })();
+      const status = await Promise.race([attempt, timeout]);
+      clearTimeout(timer);
+      return status;
     } catch (err) {
       return 'unavailable';
     }
