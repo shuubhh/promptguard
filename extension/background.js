@@ -265,12 +265,13 @@ async function ensureOffscreenDocument() {
   }
 }
 
-async function aiInfer(text) {
+async function aiInfer(text, context) {
   if (!(await ensureOffscreenDocument())) return { ok: false, error: 'ai-unavailable' };
   const ask = async () => {
     const res = await chrome.runtime.sendMessage({
       type: 'PG_AI_INFER',
-      text: String(text || '')
+      text: String(text || ''),
+      context: context || null
     });
     return res && typeof res === 'object' ? res : { ok: false, error: 'ai-unavailable' };
   };
@@ -373,7 +374,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   // On-device AI (Gemini Nano) routing — content scripts cannot host the
   // Prompt API, so these hop through the background to the offscreen doc.
   if (msg.type === 'PG_AI_REQUEST') {
-    aiInfer(msg.text)
+    aiInfer(msg.text, msg.context)
       .then((r) => sendResponse(r))
       .catch((err) => sendResponse({ ok: false, error: String((err && err.message) || err) }));
     return true;

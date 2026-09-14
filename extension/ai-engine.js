@@ -67,6 +67,10 @@
     'internal hostnames, customer/account IDs), credentials, internal IPs, ' +
     'or pasted logs/stack traces from production systems with internal detail. ' +
     'Generic programming questions, public open-source code, and natural language are SAFE. ' +
+    'If a CONFIDENTIAL WATCH-LIST is provided, treat any substantive use of those ' +
+    'company/client-specific terms — or a discussion of that client\'s internal systems, ' +
+    'workflows, or data — as SENSITIVE. Merely mentioning one common English word in an ' +
+    'unrelated educational question is SAFE. ' +
     'Reply ONLY with a JSON object matching the schema.';
 
   const CLASSIFY_SCHEMA = {
@@ -191,9 +195,45 @@
    *   { ok: false, error }
    * Never throws. `score` maps the label to the brief's confidence scale.
    */
+  /**
+   * Builds the full user message: the text plus, when available, the org's
+   * confidential watch-list (client package/class names + domain vocabulary).
+   * Without this context a bare string like "nostro vostro ledger" reads as
+   * an innocent vocabulary question to the model — with it, the model can
+   * recognize proprietary client domain jargon.
+   */
+  function buildClassifyMessage(text, context) {
+    let msg = 'User text to classify:\n' + text + '\n';
+    const ctx = context && typeof context === 'object' ? context : null;
+    const terms = [];
+    if (ctx) {
+      for (const field of ['class_names', 'packages', 'domain_vocabulary']) {
+        if (Array.isArray(ctx[field])) {
+          for (const t of ctx[field]) {
+            if (typeof t === 'string' && t.length >= 4) terms.push(t);
+          }
+        }
+      }
+      if (typeof ctx.project === 'string' && ctx.project) {
+        msg = 'Client/project name: ' + ctx.project + '\n' + msg;
+      }
+    }
+    if (terms.length > 0) {
+      const unique = Array.from(new Set(terms)).slice(0, 60);
+      msg +=
+        '\nCONFIDENTIAL WATCH-LIST (company/client-specific terms — substantive use ' +
+        'suggests SENSITIVE):\n' +
+        unique.join(', ') +
+        '\n';
+    }
+    msg += '\nRespond with the JSON object only.';
+    return msg;
+  }
+
   async function classify(text, opts) {
     const input = String(text || '').slice(0, 4000);
-    const key = hashKey(input);
+    const context = opts && typeof opts === 'object' ? opts.context : null;
+    const key = hashKey(input + '|' + JSON.stringify(context || {}));
     const hit = verdictCache.get(key);
     if (hit && Date.now() - hit.ts < CACHE_TTL_MS) return hit.value;
 
@@ -210,10 +250,7 @@
       let raw = null;
       try {
         raw = await session.prompt(
-          CLASSIFY_SYSTEM_PROMPT +
-            '\n\nUser text to classify:\n' +
-            input +
-            '\n\nRespond with the JSON object only.',
+          CLASSIFY_SYSTEM_PROMPT + '\n\n' + buildClassifyMessage(input, context),
           { signal: controller.signal, responseConstraint: CLASSIFY_SCHEMA }
         );
       } catch (err) {

@@ -30,6 +30,7 @@ const calls = {
   create: [],
   prompt: 0,
   promptOpts: [],
+  promptTexts: [],
   destroy: 0
 };
 
@@ -40,6 +41,7 @@ function resetCalls() {
   calls.create.length = 0;
   calls.prompt = 0;
   calls.promptOpts.length = 0;
+  calls.promptTexts.length = 0;
   calls.destroy = 0;
 }
 
@@ -62,6 +64,8 @@ const fakeLanguageModel = {
       async prompt(text, opts) {
         calls.prompt += 1;
         calls.promptOpts.push(opts);
+        calls.promptTexts.push(String(text));
+        calls.promptTexts.push(String(text));
         if (fakePromptMode === 'hang') {
           return new Promise((resolve, reject) => {
             if (opts && opts.signal) {
@@ -298,6 +302,43 @@ async function test(name, fn) {
     const session = await PG.ai.createSession({});
     assert.strictEqual(session, null, 'null on failure');
     fakeCreateThrows = false;
+  });
+
+  // ---------- 4b. Context-aware classification (org watch-list) ----------
+  await test('classify with context → prompt carries the confidential watch-list', async () => {
+    resetCalls();
+    fakePromptResponse = '{"label":"SENSITIVE","reason":"client terms"}';
+    await PG.ai.classify('nostro vostro ledger reconciliation', {
+      context: {
+        project: 'E2E Fakebank Fixture',
+        class_names: ['PortfolioReconciliationEngine'],
+        packages: ['com.hdfcbank.wealth.portfolio'],
+        domain_vocabulary: ['nostro', 'vostro', 'ledger', 'reconciliation']
+      }
+    });
+    assert.strictEqual(calls.prompt, 1, 'model called once');
+    const sent = calls.promptTexts[0];
+    assert.ok(sent.includes('CONFIDENTIAL WATCH-LIST'), 'watch-list header present');
+    assert.ok(sent.includes('nostro'), 'matched vocab term present');
+    assert.ok(sent.includes('PortfolioReconciliationEngine'), 'class name present');
+    assert.ok(sent.includes('E2E Fakebank Fixture'), 'project name present');
+  });
+
+  await test('classify without context → no watch-list terms in the prompt', async () => {
+    resetCalls();
+    await PG.ai.classify('just a plain question');
+    assert.strictEqual(calls.prompt, 1);
+    // The system prompt EXPLAINS the watch-list mechanism, so only assert
+    // that no actual terms are listed when no context was given.
+    assert.ok(!calls.promptTexts[0].includes('nostro'), 'no watch-list terms');
+  });
+
+  await test('same text + different context → model re-run (cache key includes context)', async () => {
+    resetCalls();
+    const text = 'explain the settlement flow';
+    await PG.ai.classify(text, { context: { domain_vocabulary: ['settlement'] } });
+    await PG.ai.classify(text, { context: { domain_vocabulary: ['portfolio'] } });
+    assert.strictEqual(calls.prompt, 2, 'different context must not hit the cache');
   });
 
   // ---------- 5. Graceful degradation ----------

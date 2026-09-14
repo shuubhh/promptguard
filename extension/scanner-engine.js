@@ -320,7 +320,11 @@
         (hasContext && regexScore <= 0.7));
 
     if (shouldRunAI) {
-      const ai = await runAIClassifier(text);
+      // Give the semantic engine the org's confidential watch-list — without
+      // client terms in the prompt, Nano has no way to know "nostro vostro
+      // ledger" is proprietary banking jargon rather than a vocab question.
+      const ctxProject = topProjectName(projectResults);
+      const ai = await runAIClassifier(text, buildAIContext(ctxProject, projectResults));
       if (ai && ai.available) {
         aiUsed = true;
         aiLabel = ai.label;
@@ -465,7 +469,55 @@
   // via the background service worker. Content scripts cannot host the
   // Prompt API (not available in workers or on web pages).
   // ------------------------------------------------------------------
-  function runAIClassifier(text) {
+  /** The project whose fingerprint contributed the most (or null). */
+  function topProjectName(projectResults) {
+    let top = null;
+    let topScore = 0;
+    for (const pr of projectResults || []) {
+      if (pr && pr.score > topScore) {
+        topScore = pr.score;
+        top = pr.project;
+      }
+    }
+    return top;
+  }
+
+  /**
+   * Compact context object for the AI classifier: project name plus the
+   * watch-list terms that actually matched (plus a capped slice of the rest
+   * so the model sees the domain even on a partial match).
+   */
+  function buildAIContext(projectName, projectResults) {
+    const ctx = { project: projectName || null, class_names: [], packages: [], domain_vocabulary: [] };
+    const seen = new Set();
+    const push = (field, value) => {
+      if (typeof value === 'string' && value.length >= 4 && !seen.has(field + ':' + value)) {
+        seen.add(field + ':' + value);
+        ctx[field].push(value);
+      }
+    };
+    // 1) Terms that actually matched in this text (strongest signal).
+    for (const pr of projectResults || []) {
+      if (!pr || pr.score <= 0) continue;
+      for (const m of pr.matches || []) {
+        const f =
+          m.type === 'class_name' ? 'class_names' : m.type === 'package' ? 'packages' : 'domain_vocabulary';
+        push(f, m.matchedText);
+      }
+    }
+    // 2) A capped slice of the full fingerprint so the model has domain
+    //    context even when only a partial match triggered the consult.
+    for (const pr of projectResults || []) {
+      if (!pr || !pr.fingerprint) continue;
+      const fp = pr.fingerprint;
+      for (const t of (fp.class_names || []).slice(0, 15)) push('class_names', t);
+      for (const t of (fp.packages || []).slice(0, 15)) push('packages', t);
+      for (const t of (fp.domain_vocabulary || []).slice(0, 30)) push('domain_vocabulary', t);
+    }
+    return ctx;
+  }
+
+  function runAIClassifier(text, context) {
     return new Promise((resolve) => {
       let settled = false;
       const finish = (value) => {
@@ -483,7 +535,8 @@
       try {
         sendPromise = chrome.runtime.sendMessage({
           type: 'PG_AI_REQUEST',
-          text: String(text || '').slice(0, 4000)
+          text: String(text || '').slice(0, 4000),
+          context: context || null
         });
       } catch (err) {
         clearTimeout(timer);

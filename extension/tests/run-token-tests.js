@@ -81,6 +81,14 @@ function loadPopup(storageData) {
     atob: (s) => Buffer.from(s, 'base64').toString('binary'),
     btoa: (s) => Buffer.from(s, 'binary').toString('base64'),
     document: { addEventListener() {} },
+    // popup.js binds `const PG = window.__PromptGuard || {}` and installs a
+    // boot-error trap on window (v0.1.1+). Mirror the real popup window.
+    window: {
+      __PromptGuard: {},
+      __pgBootErrors: [],
+      addEventListener() {},
+      removeEventListener() {}
+    },
     chrome: {
       storage: {
         local: {
