@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "PromptGuard",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Prevents sensitive client code from being sent to AI chatbots",
   "permissions": [
     "storage",

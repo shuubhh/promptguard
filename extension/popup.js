@@ -48,6 +48,12 @@ window.addEventListener('unhandledrejection', (e) => {
   });
 });
 
+// The Prompt API wrapper (ai-engine.js, loaded before this script) declares
+// its PG binding INSIDE an IIFE — only window.__PromptGuard is global. Bind
+// it here. (Its absence is what silently killed this section pre-v0.1.2:
+// the status froze on the HTML placeholder and Enable crashed on click.)
+const PG = window.__PromptGuard || {};
+
 async function loadStateIntoForm() {
   try {
     const state = await chrome.storage.local.get([
