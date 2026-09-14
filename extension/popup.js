@@ -22,6 +22,32 @@
 
 const $ = (id) => document.getElementById(id);
 
+// ------------------------------------------------------------------
+// Error trap — registered FIRST. A popup that dies from an uncaught
+// error is invisible by default; from now on the error text shows in
+// the AI status line (v0.1.1 diagnostics).
+// ------------------------------------------------------------------
+function reportPopupError(where, err) {
+  try {
+    const el = document.getElementById('aiStatus');
+    if (el) {
+      el.textContent = 'Popup ' + where + ': ' + String((err && err.message) || err);
+      el.className = 'pg-ai-status error';
+    }
+  } catch (err2) {
+    /* nothing more we can do */
+  }
+}
+window.onerror = function (msg) {
+  reportPopupError('error', { message: msg });
+  return false;
+};
+window.addEventListener('unhandledrejection', (e) => {
+  reportPopupError('unhandled rejection', {
+    message: (e && e.reason && e.reason.message) || e.reason || e
+  });
+});
+
 async function loadStateIntoForm() {
   try {
     const state = await chrome.storage.local.get([
@@ -167,6 +193,7 @@ function updateAIProgress(ratio) {
 }
 
 async function loadAIState() {
+  setAIStatus('init: popup script loaded…');
   // Orphaned-context guard: if the extension was reloaded/updated while this
   // popup stayed open, chrome.runtime.id is gone and every chrome.* call
   // would hang or reject confusingly. Say so instead of spinning forever.
@@ -177,6 +204,7 @@ async function loadAIState() {
     setAIStatus('Extension was reloaded — close and reopen this popup.', true);
     return;
   }
+  setAIStatus('init: reading settings…');
   let enabled = false;
   let flags = {};
   try {
@@ -200,6 +228,7 @@ async function loadAIState() {
 
   // Availability check runs in the popup document (an extension page, where
   // the Prompt API exists) — the same context that will host the download.
+  setAIStatus('init: checking AI availability…');
   if (PG.ai) {
     try {
       // Bounded inside ai-engine (AVAILABILITY_TIMEOUT_MS) — cannot hang forever.
